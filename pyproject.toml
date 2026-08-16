@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "compliant-financial-rag"
+version = "0.1.0"
+description = "Compliant Financial Document RAG and Audit Agent"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+
+authors = [
+    {name = "Ahmed Helmy Ali Ramadan"}
+]
+
+dependencies = []
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v"
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+exclude = [
+    ".venv",
+    "data",
+    "models",
+    "reports",
+    "notebooks"
+]
+
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B"
+]
+
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
