@@ -5,9 +5,8 @@ It can be extended with more sophisticated rules (e.g., ML‑based scoring).
 # src/audit/decisions.py
 from dataclasses import dataclass
 from enum import Enum
-from typing import List
 
-from src.audit.models import AuditRecord, ReviewDecision
+from src.audit.models import AuditRecord
 
 
 class ReviewRecommendation(str, Enum):
@@ -41,8 +40,8 @@ class DecisionEngine:
         suggest how the human reviewer should decide.
         """
         # Default: approve if everything looks good
-        reasoning = []
-        suggested_notes = ""
+       # reasoning = []
+        #suggested_notes = ""
 
         # Rule 1: If verification was VERIFIED and risk is low -> Approve
         if record.verification_status == "VERIFIED" and record.risk_level == "LOW":

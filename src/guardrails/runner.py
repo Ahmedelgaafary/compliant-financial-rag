@@ -1,21 +1,22 @@
 """
-This orchestrates all guardrails in sequence, providing a single entry point for the agent.
+This orchestrates all guardrails in sequence, 
+providing a single entry point for the agent.
 """
 # src/guardrails/runner.py
-from typing import List, Optional, Tuple
 from dataclasses import dataclass
+from typing import List, Optional
 
+from src.guardrails.confidence import ConfidenceScore, ConfidenceScorer
+from src.guardrails.generation_guard import GenerationGuard, GenerationGuardResult
+from src.guardrails.policies import GuardrailPolicies
+from src.guardrails.risk_engine import RiskAssessment, RiskEngine
+from src.guardrails.validation import (
+    InputValidator,
+    OutputValidator,
+    RetrievalValidator,
+)
 from src.retrieval.models import RetrievalResult
 from src.verification.models import VerificationResult
-from src.guardrails.policies import GuardrailPolicies
-from src.guardrails.validation import (
-    InputValidator, 
-    RetrievalValidator, 
-    OutputValidator
-)
-from src.guardrails.confidence import ConfidenceScorer, ConfidenceScore
-from src.guardrails.risk_engine import RiskEngine, RiskAssessment
-from src.guardrails.generation_guard import GenerationGuard, GenerationGuardResult
 
 
 @dataclass
@@ -81,7 +82,9 @@ class GuardrailRunner:
             )
 
         # 2. Retrieval Validation
-        retrieval_valid, retrieval_issues = self.retrieval_validator.validate(retrieval_results)
+        retrieval_valid, retrieval_issues = (
+        self.retrieval_validator.validate(retrieval_results)
+        )
         if not retrieval_valid and self.policies.min_retrieval_confidence > 0.3:
             # If retrieval fails critically, don't proceed to LLM
             return GuardrailPipelineResult(
@@ -98,15 +101,21 @@ class GuardrailRunner:
             )
 
         # 3. Confidence Scoring
-        confidence = self.confidence_scorer.compute(retrieval_results, verification_results)
+        confidence = self.confidence_scorer.compute(
+        retrieval_results, verification_results
+        )
 
         # 4. Risk Assessment
-        risk = self.risk_engine.assess(retrieval_results, verification_results, confidence)
+        risk = self.risk_engine.assess(
+        retrieval_results, verification_results, confidence
+        )
 
         # 5. Generation Guard (if LLM output is provided)
         gen_guard_result = None
         if raw_llm_output:
-            gen_guard_result = self.generation_guard.guard(raw_llm_output, verification_results)
+            gen_guard_result = self.generation_guard.guard(
+            raw_llm_output, verification_results
+            )
 
         # 6. Output Validation
         output_valid = True

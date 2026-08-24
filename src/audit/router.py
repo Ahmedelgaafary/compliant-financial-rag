@@ -3,11 +3,10 @@ Routes the query based on risk assessment.
 
 """
 # src/audit/router.py
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
 from typing import List
 
-from src.audit.models import AuditRecord
 from src.guardrails.risk_engine import RiskAssessment
 from src.verification.models import VerificationResult
 
@@ -47,7 +46,10 @@ class AuditRouter:
         if risk_assessment.risk_level in ["HIGH", "CRITICAL"]:
             return RoutingDecision(
                 action=RoutingAction.HUMAN_REVIEW,
-                reason=f"Risk level is {risk_assessment.risk_level}. Triggers: {risk_assessment.triggers}",
+                reason=(
+                f"Risk level is {risk_assessment.risk_level}."
+                " Triggers: {risk_assessment.triggers}",
+                ),
                 should_create_audit_record=True,
                 audit_priority="HIGH",
             )
@@ -66,8 +68,12 @@ class AuditRouter:
         if risk_assessment.risk_level == "MEDIUM":
             return RoutingDecision(
                 action=RoutingAction.AUTO_ANSWER,
-                reason="Medium risk. Auto-answering with disclaimer. Logging for review.",
-                should_create_audit_record=True,  # Still log it for monitoring
+                reason=(
+                "Medium risk. Auto-answering with disclaimer."
+                " Logging for review.",
+                ),
+                should_create_audit_record=True,  
+                # Still log it for monitoring
                 audit_priority="MEDIUM",
             )
 

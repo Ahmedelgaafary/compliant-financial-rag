@@ -2,14 +2,15 @@
 Tests for GenerationGuard and GuardrailRunner.
 """
 # tests/test_guardrails.py
-import pytest
 from unittest.mock import Mock
 
-from src.guardrails.generation_guard import GenerationGuard, GenerationGuardResult
-from src.guardrails.runner import GuardrailRunner
+import pytest
+
+from src.guardrails.generation_guard import GenerationGuard
 from src.guardrails.policies import GuardrailPolicies
-from src.verification.models import VerificationResult
+from src.guardrails.runner import GuardrailRunner
 from src.retrieval.models import RetrievalResult
+from src.verification.models import VerificationResult
 
 
 @pytest.fixture
