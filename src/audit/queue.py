@@ -4,8 +4,8 @@ Manages the audit queue (in-memory, easily swappable for Redis/DB later).
 # src/audit/queue.py
 import uuid
 from datetime import datetime
-from typing import List, Optional, Dict
 from threading import Lock
+from typing import Dict, List, Optional
 
 from src.audit.models import AuditRecord, AuditStatus, ReviewDecision
 
@@ -33,7 +33,10 @@ class AuditQueue:
     def get_pending(self) -> List[AuditRecord]:
         """Retrieve all pending audit records."""
         with self._lock:
-            return [r for r in self._records.values() if r.status == AuditStatus.PENDING]
+            return [
+                r for r in self._records.values() 
+                if r.status == AuditStatus.PENDING
+            ]
 
     def get_by_id(self, audit_id: str) -> Optional[AuditRecord]:
         """Retrieve a specific audit record by ID."""
@@ -75,4 +78,6 @@ class AuditQueue:
     def size(self) -> int:
         """Return the number of pending records."""
         with self._lock:
-            return len([r for r in self._records.values() if r.status == AuditStatus.PENDING])
+            return len([
+                r for r in self._records.values() if r.status == AuditStatus.PENDING
+            ])

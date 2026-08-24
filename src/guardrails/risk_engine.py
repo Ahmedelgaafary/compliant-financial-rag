@@ -1,24 +1,30 @@
 """
 Purpose: Compute a risk score for the entire query–answer pipeline, 
 considering retrieval confidence, verification outcome, contradictions, etc. 
-This is used to decide whether the answer can be returned directly or must go to human audit.
+This is used to decide whether the answer can be returned directly 
+or must go to human audit.
 """
 # src/guardrails/risk_engine.py
-from typing import List, Optional
 from dataclasses import dataclass
+from typing import List
 
-from src.verification.models import VerificationResult
 from src.retrieval.models import RetrievalResult
+from src.verification.models import VerificationResult
+
 from .confidence import ConfidenceScore
 from .policies import GuardrailPolicies
 
 
 @dataclass
 class RiskAssessment:
-    risk_score: float          # 0.0–1.0
-    risk_level: str            # LOW, MEDIUM, HIGH, CRITICAL
-    triggers: List[str]        # list of reasons for the risk level
-    recommended_action: str    # "AUTO_ANSWER", "HUMAN_REVIEW", "BLOCK"
+    risk_score: float         
+     # 0.0–1.0
+    risk_level: str           
+     # LOW, MEDIUM, HIGH, CRITICAL
+    triggers: List[str]       
+     # list of reasons for the risk level
+    recommended_action: str    
+    # "AUTO_ANSWER", "HUMAN_REVIEW", "BLOCK"
 
 
 class RiskEngine:
@@ -49,13 +55,19 @@ class RiskEngine:
             triggers.extend([f"VERIFICATION_FAILURE_{v.reason}" for v in failed])
 
         # Factor 3: Numeric mismatches (critical)
-        numeric_mismatches = [v for v in verification_results if v.reason == "NUMERIC_MISMATCH"]
+        numeric_mismatches = [
+            v for v in verification_results 
+            if v.reason == "NUMERIC_MISMATCH"
+        ]
         if numeric_mismatches:
             risk_score += 0.4
             triggers.append("NUMERIC_MISMATCH")
 
         # Factor 4: Contradictions
-        contradictions = [v for v in verification_results if v.reason == "EVIDENCE_CONTRADICTS"]
+        contradictions = [
+            v for v in verification_results 
+            if v.reason == "EVIDENCE_CONTRADICTS"
+        ]
         if contradictions:
             risk_score += 0.2 * len(contradictions)
             triggers.append("EVIDENCE_CONTRADICTS")

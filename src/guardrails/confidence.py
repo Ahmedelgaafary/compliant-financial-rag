@@ -1,10 +1,11 @@
 """
-Purpose: Evaluate the overall confidence of the answer based on retrieval scores, verification status, and other signals.
+Purpose: Evaluate the overall confidence of the answer based on retrieval scores, 
+verification status, and other signals.
 """
 
 # src/guardrails/confidence.py
-from typing import List, Optional
 from dataclasses import dataclass
+from typing import List
 
 from src.retrieval.models import RetrievalResult
 from src.verification.models import VerificationResult
@@ -41,24 +42,25 @@ class ConfidenceScorer:
         retrieval_results: List[RetrievalResult],
         verification_results: List[VerificationResult],
     ) -> ConfidenceScore:
-        """
-        Compute confidence based on all evidence and verification outcomes.
-        """
-        # Example logic:
-        avg_retrieval_score = sum(r.score for r in retrieval_results) / len(retrieval_results) if retrieval_results else 0.0
+        """Compute confidence based on all evidence and verification outcomes."""
+        avg_retrieval_score = (
+            sum(r.score for r in retrieval_results) / len(retrieval_results)
+            if retrieval_results else 0.0
+        )
 
-        # Verification confidence: ratio of VERIFIED vs total claims
         verified_count = sum(1 for v in verification_results if v.status == "VERIFIED")
         total_claims = len(verification_results) or 1
         verification_conf = verified_count / total_claims
 
-        # Penalty for contradictions
-        contradictions = sum(1 for v in verification_results if v.reason == "EVIDENCE_CONTRADICTS")
-        penalty = 0.2 * min(contradictions, 2)  # max penalty 0.4
+        contradictions = sum(
+            1 for v in verification_results
+            if v.reason == "EVIDENCE_CONTRADICTS"
+        )
+        penalty = 0.2 * min(contradictions, 2)
 
         overall = (
-            self.retrieval_weight * avg_retrieval_score +
-            self.verification_weight * verification_conf
+            self.retrieval_weight * avg_retrieval_score
+            + self.verification_weight * verification_conf
         ) - penalty
 
         overall = max(0.0, min(1.0, overall))
@@ -67,6 +69,8 @@ class ConfidenceScorer:
             overall=overall,
             retrieval_confidence=avg_retrieval_score,
             verification_confidence=verification_conf,
-            evidence_sufficiency=len(retrieval_results) / 5.0 if retrieval_results else 0.0,  # example threshold
+            evidence_sufficiency=(
+                len(retrieval_results) / 5.0 if retrieval_results else 0.0
+            ),
             contradictions_penalty=penalty,
         )

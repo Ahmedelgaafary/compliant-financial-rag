@@ -3,10 +3,11 @@ Purpose: Provide input, retrieval, and output validators.
 These are the actual guardrails that run at different stages of the workflow.
 """
 # src/guardrails/validation.py
-import re
-from typing import List, Optional, Set
+from typing import List
+
 from src.retrieval.models import RetrievalResult
 from src.verification.models import VerificationResult
+
 from .policies import GuardrailPolicies
 
 
@@ -94,7 +95,7 @@ class OutputValidator:
 
         # 1. Check that all numeric claims in the answer are supported by verification
         # (This is heuristic: we find numbers and verify they appear in verified claims)
-        numbers_in_answer = re.findall(r'\$\d+(?:\.\d+)?[BMK]?', generated_answer)
+        #numbers_in_answer = re.findall(r'\$\d+(?:\.\d+)?[BMK]?', generated_answer)
         # For simplicity, we assume we have a list of verified numeric claims
         # (in real implementation, we'd need to compare values)
         verified_numeric_claims = set()

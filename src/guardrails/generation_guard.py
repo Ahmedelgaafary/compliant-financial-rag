@@ -1,10 +1,10 @@
 # src/guardrails/generation_guard.py
 import re
-from typing import List, Optional, Set, Tuple
 from dataclasses import dataclass
+from typing import List, Set, Tuple
 
-from src.verification.models import VerificationResult
 from src.guardrails.policies import GuardrailPolicies
+from src.verification.models import VerificationResult
 
 
 @dataclass
