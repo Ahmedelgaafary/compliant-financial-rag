@@ -1,0 +1,36 @@
+{
+  "verification_status_weights": {
+    "VERIFIED": 1.0,
+    "INCONCLUSIVE": 0.6,
+    "REJECTED": 0.0
+  },
+  "risk_level_weights": {
+    "LOW": 1.0,
+    "MEDIUM": 0.7,
+    "HIGH": 0.4,
+    "CRITICAL": 0.1
+  },
+  "trigger_weights": {
+    "NUMERIC_MISMATCH": -0.6,
+    "EVIDENCE_CONTRADICTS": -0.5,
+    "EVIDENCE_MISSING": -0.4,
+    "ENTITY_MISMATCH": -0.3,
+    "PERIOD_MISMATCH": -0.3
+  },
+  "decision_thresholds": {
+    "APPROVE": 0.75,
+    "NEEDS_MORE_INFO": 0.5,
+    "REJECT": 0.3,
+    "ESCALATE": 0.15
+  },
+  "force_escalation_triggers": [
+    "NUMERIC_MISMATCH",
+    "ENTITY_MISMATCH"
+  ],
+  "force_reject_triggers": [
+    "EVIDENCE_CONTRADICTS"
+  ],
+  "force_needs_info_triggers": [
+    "EVIDENCE_MISSING"
+  ]
+}
