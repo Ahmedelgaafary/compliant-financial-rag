@@ -100,3 +100,4 @@ logs/
 # ==========================================
 
 .ruff_cache/audit_logs/
+audit_logs/
