@@ -4,8 +4,8 @@ Defines the audit schemas, statuses, and records.
 # src/audit/models.py
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List, Any
 from enum import Enum
+from typing import List, Optional
 
 
 class AuditStatus(str, Enum):

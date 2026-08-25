@@ -3,8 +3,8 @@ Purpose: Evaluate the overall confidence of the answer based on retrieval scores
 """
 
 # src/guardrails/confidence.py
-from typing import List, Optional
 from dataclasses import dataclass
+from typing import List
 
 from src.retrieval.models import RetrievalResult
 from src.verification.models import VerificationResult

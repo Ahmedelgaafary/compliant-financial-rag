@@ -4,10 +4,9 @@ For now, we use a simple file‑based logger.
 """
 # src/audit/audit_log.py
 import json
-import os
 from datetime import datetime
-from typing import List, Optional
 from pathlib import Path
+from typing import List, Optional
 
 from src.audit.models import AuditRecord
 

@@ -4,11 +4,12 @@ considering retrieval confidence, verification outcome, contradictions, etc.
 This is used to decide whether the answer can be returned directly or must go to human audit.
 """
 # src/guardrails/risk_engine.py
-from typing import List, Optional
 from dataclasses import dataclass
+from typing import List
 
-from src.verification.models import VerificationResult
 from src.retrieval.models import RetrievalResult
+from src.verification.models import VerificationResult
+
 from .confidence import ConfidenceScore
 from .policies import GuardrailPolicies
 

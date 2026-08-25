@@ -1,18 +1,15 @@
 # tests/test_audit.py (updated)
-import pytest
 import json
 import tempfile
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
-from src.audit.models import AuditRecord, AuditStatus, ReviewDecision
-from src.audit.router import AuditRouter, RoutingAction
-from src.audit.queue import AuditQueue
-from src.audit.decisions import DecisionEngine, ReviewRecommendation
 from src.audit.audit_log import AuditLogger
+from src.audit.decisions import DecisionEngine, ReviewRecommendation
+from src.audit.models import AuditRecord, AuditStatus, ReviewDecision
 from src.audit.review_service import ReviewService
+from src.audit.router import RoutingAction
 from src.guardrails.risk_engine import RiskAssessment
-from src.verification.models import VerificationResult
 
 
 # Tests for DecisionEngine

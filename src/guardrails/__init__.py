@@ -8,8 +8,8 @@ from .policies import GuardrailPolicies
 from .risk_engine import RiskEngine
 from .validation import (
     InputValidator,
-    RetrievalValidator,
     OutputValidator,
+    RetrievalValidator,
 )
 
 __all__ = [

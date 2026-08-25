@@ -3,11 +3,10 @@ Routes the query based on risk assessment.
 
 """
 # src/audit/router.py
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
 from typing import List
 
-from src.audit.models import AuditRecord
 from src.guardrails.risk_engine import RiskAssessment
 from src.verification.models import VerificationResult
 
