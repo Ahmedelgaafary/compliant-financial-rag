@@ -12,11 +12,12 @@ requires-python = ">=3.12"
 license = {text = "MIT"}
 
 authors = [
-    {name = "Ahmed Helmy Ali Ramadan" "Mohamed Hassan Mohamed SAlem"}
+    {name = "Ahmed Helmy Ali Ramadan"},
+    {name = "Mohamed Hassan Mohamed SAlem"}
 ]
 
 dependencies = [
-"faiss-cpu>=1.7.0",
+    "faiss-cpu>=1.7.0",
     "fastapi>=0.104.0",
     "langchain>=0.1.0",
     "langchain-core>=0.1.0",
@@ -28,12 +29,12 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
-    "PyMuPDF>=1.23.0",          
+    "PyMuPDF>=1.23.0",
     "rank-bm25>=0.2.2",
     "scipy>=1.10.0",
     "sentence-transformers>=2.2.0",
     "sqlalchemy>=2.0.0",
-    "uvicorn[standard]>=0.24.0", 
+    "uvicorn[standard]>=0.24.0",
 ]
 
 # Optional development dependencies – install with `pip install -e .[dev]`
@@ -41,8 +42,9 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "ruff>=0.4.0",
-    "mypy>=1.0.0",                 
+    "mypy>=1.0.0",
 ]
+
 [tool.setuptools.packages.find]
 where = ["."]
 
