@@ -56,7 +56,7 @@ addopts = "-v"
 
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py312"
 
 exclude = [
@@ -80,6 +80,3 @@ select = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[tool.ruff]
-line-length = 120
