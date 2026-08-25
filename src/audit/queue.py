@@ -64,6 +64,9 @@ class AuditQueue:
             record = self._records.get(audit_id)
             if not record:
                 return False
+            # Only allow resolution if the record is currently in review
+            if record.status != AuditStatus.IN_REVIEW:
+                return False
             record.status = AuditStatus.RESOLVED
             record.review_decision = decision
             record.review_notes = notes
