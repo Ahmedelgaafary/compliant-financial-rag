@@ -1,8 +1,7 @@
-""""
-Routes the query based on risk assessment.
-
 """
-# src/audit/router.py
+Routes the query based on risk assessment and verification outcomes.
+"""
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import List
@@ -47,14 +46,38 @@ class AuditRouter:
             return RoutingDecision(
                 action=RoutingAction.HUMAN_REVIEW,
                 reason=(
-                f"Risk level is {risk_assessment.risk_level}."
-                " Triggers: {risk_assessment.triggers}",
+                    f"Risk level is {risk_assessment.risk_level}. "
+                    f"Triggers: {risk_assessment.triggers}"
                 ),
                 should_create_audit_record=True,
                 audit_priority="HIGH",
             )
 
-        # 2. If any NUMERIC_MISMATCH exists -> Human Review (per policy)
+        # 2. Check verification statuses – any INCONCLUSIVE 
+        #or REJECTED requires human review
+        for v in verification_results:
+            if v.status == "INCONCLUSIVE":
+                return RoutingDecision(
+                    action=RoutingAction.HUMAN_REVIEW,
+                    reason=(
+                        f"Verification inconclusive. Reason: {v.reason}"
+                    ),
+                    should_create_audit_record=True,
+                    audit_priority="MEDIUM",
+                )
+            if v.status == "REJECTED":
+                # REJECTED already triggers numeric mismatch via risk triggers,
+                # but handle explicitly
+                return RoutingDecision(
+                    action=RoutingAction.HUMAN_REVIEW,
+                    reason=(
+                        f"Verification rejected. Reason: {v.reason}"
+                    ),
+                    should_create_audit_record=True,
+                    audit_priority="HIGH",
+                )
+
+        # 3. If any NUMERIC_MISMATCH trigger exists -> Human Review
         for trigger in risk_assessment.triggers:
             if "NUMERIC_MISMATCH" in trigger:
                 return RoutingDecision(
@@ -64,23 +87,22 @@ class AuditRouter:
                     audit_priority="HIGH",
                 )
 
-        # 3. If MEDIUM risk -> Auto-answer with disclaimer, but still audit
+        # 4. If MEDIUM risk -> Auto-answer with disclaimer, but still audit
         if risk_assessment.risk_level == "MEDIUM":
             return RoutingDecision(
                 action=RoutingAction.AUTO_ANSWER,
                 reason=(
-                "Medium risk. Auto-answering with disclaimer."
-                " Logging for review.",
+                    "Medium risk. Auto-answering with disclaimer. "
+                    "Logging for review."
                 ),
-                should_create_audit_record=True,  
-                # Still log it for monitoring
+                should_create_audit_record=True,
                 audit_priority="MEDIUM",
             )
 
-        # 4. LOW risk -> Auto-answer
+        # 5. LOW risk -> Auto-answer
         return RoutingDecision(
             action=RoutingAction.AUTO_ANSWER,
             reason="Low risk. Auto-answering.",
-            should_create_audit_record=False,  # Only log if needed
+            should_create_audit_record=False,
             audit_priority="LOW",
         )
