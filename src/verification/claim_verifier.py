@@ -103,4 +103,3 @@ class ClaimVerifier:
             confidence=1.0,
             evidence_chunk_id=claim.source_chunk_id,
         )
-        
