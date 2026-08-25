@@ -1,15 +1,9 @@
-"""
-Purpose: Compute a risk score for the entire query–answer pipeline, 
-considering retrieval confidence, verification outcome, contradictions, etc. 
-This is used to decide whether the answer can be returned directly 
-or must go to human audit.
-"""
 # src/guardrails/risk_engine.py
 from dataclasses import dataclass
 from typing import List
 
 from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 from .confidence import ConfidenceScore
 from .policies import GuardrailPolicies
@@ -17,20 +11,19 @@ from .policies import GuardrailPolicies
 
 @dataclass
 class RiskAssessment:
-    risk_score: float         
-     # 0.0–1.0
-    risk_level: str           
-     # LOW, MEDIUM, HIGH, CRITICAL
-    triggers: List[str]       
-     # list of reasons for the risk level
-    recommended_action: str    
-    # "AUTO_ANSWER", "HUMAN_REVIEW", "BLOCK"
+    """Deterministic risk decision."""
+    risk_score: float
+    risk_level: str
+    triggers: List[str]
+    recommended_action: str
 
 
 class RiskEngine:
     """
-    Evaluates risk based on all available signals and policies.
+    Converts verification results and confidence into a deterministic risk decision.
+    It does NOT perform verification itself.
     """
+
     def __init__(self, policies: GuardrailPolicies):
         self.policies = policies
 
@@ -40,58 +33,106 @@ class RiskEngine:
         verification_results: List[VerificationResult],
         confidence: ConfidenceScore,
     ) -> RiskAssessment:
+        """
+        Compute a deterministic risk score based on:
+        - verification status (VERIFIED, INCONCLUSIVE, REJECTED)
+        - contradictions (e.g., evidence contradicts)
+        - confidence (overall and per-claim)
+        - provenance (missing chunk_id)
+        - number of evidence chunks
+        - policy thresholds
+        """
         risk_score = 0.0
         triggers = []
 
-        # Factor 1: Low confidence
-        if confidence.overall < self.policies.min_overall_confidence:
-            risk_score += 0.3
-            triggers.append("LOW_CONFIDENCE")
-
-        # Factor 2: Verification failures
-        failed = [v for v in verification_results if v.status != "VERIFIED"]
-        if failed:
-            risk_score += 0.2 * len(failed)
-            triggers.extend([f"VERIFICATION_FAILURE_{v.reason}" for v in failed])
-
-        # Factor 3: Numeric mismatches (critical)
-        numeric_mismatches = [
-            v for v in verification_results 
-            if v.reason == "NUMERIC_MISMATCH"
+        # 1. Verification failures
+        rejected = [
+            v for v in verification_results
+            if v.status == VerificationStatus.REJECTED
         ]
-        if numeric_mismatches:
-            risk_score += 0.4
-            triggers.append("NUMERIC_MISMATCH")
+        if rejected:
+            risk_score += (
+                self.policies.risk_increment_rejected * len(rejected)
+            )
+            triggers.extend(
+                [f"REJECTED_{v.reason}" for v in rejected]
+            )
 
-        # Factor 4: Contradictions
+        inconclusive = [
+            v for v in verification_results
+            if v.status == VerificationStatus.INCONCLUSIVE
+        ]
+        if inconclusive:
+            risk_score += (
+                self.policies.risk_increment_inconclusive * len(inconclusive)
+            )
+            triggers.extend(
+                [f"INCONCLUSIVE_{v.reason}" for v in inconclusive]
+            )
+
+        # 2. Contradictions
         contradictions = [
-            v for v in verification_results 
-            if v.reason == "EVIDENCE_CONTRADICTS"
+            v for v in verification_results
+            if v.reason == "evidence_contradicts"
         ]
         if contradictions:
-            risk_score += 0.2 * len(contradictions)
+            risk_score += (
+                self.policies.risk_increment_contradiction
+                * len(contradictions)
+            )
             triggers.append("EVIDENCE_CONTRADICTS")
 
-        # Factor 5: Insufficient evidence
-        if not retrieval_results or len(retrieval_results) < 2:
-            risk_score += 0.2
+        # 3. Low confidence
+        if confidence.overall < self.policies.min_overall_confidence:
+            risk_score += self.policies.risk_increment_low_confidence
+            triggers.append("LOW_CONFIDENCE")
+
+        # 4. Missing provenance (chunk_id)
+        missing_provenance = [
+            v for v in verification_results
+            if v.evidence_chunk_id is None
+        ]
+        if missing_provenance:
+            risk_score += (
+                self.policies.risk_increment_missing_provenance
+                * len(missing_provenance)
+            )
+            triggers.append("MISSING_PROVENANCE")
+
+        # 5. Insufficient evidence
+        if not retrieval_results:
+            risk_score += self.policies.risk_increment_no_evidence
+            triggers.append("NO_EVIDENCE")
+        elif len(retrieval_results) < self.policies.min_evidence_chunks:
+            risk_score += (
+                self.policies.risk_increment_insufficient_evidence
+            )
             triggers.append("INSUFFICIENT_EVIDENCE")
+
+        # 6. Numeric mismatch (critical)
+        numeric_mismatch = any(
+            v.reason == "numeric_mismatch" for v in rejected
+        )
+        if numeric_mismatch:
+            risk_score += self.policies.risk_increment_numeric_mismatch
+            triggers.append("NUMERIC_MISMATCH")
 
         # Cap risk score
         risk_score = min(1.0, risk_score)
 
-        # Determine level and action
+        # Determine risk level and action
         risk_level = self.policies.get_risk_level(risk_score)
-        if risk_level == "HIGH" or risk_score >= 0.8:
+        if (
+            risk_level == "CRITICAL"
+            or (self.policies.block_on_numeric_mismatch and numeric_mismatch)
+        ):
+            recommended_action = "BLOCK"
+        elif risk_level == "HIGH":
             recommended_action = "HUMAN_REVIEW"
         elif risk_level == "MEDIUM":
             recommended_action = "AUTO_ANSWER_WITH_DISCLAIMER"
         else:
             recommended_action = "AUTO_ANSWER"
-
-        # If critical numeric mismatch and policy says block, override
-        if self.policies.block_on_numeric_mismatch and "NUMERIC_MISMATCH" in triggers:
-            recommended_action = "BLOCK"
 
         return RiskAssessment(
             risk_score=risk_score,

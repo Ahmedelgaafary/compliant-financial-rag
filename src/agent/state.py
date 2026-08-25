@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import List, Optional
 
-from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult, Claim
-from src.guardrails.runner import GuardrailPipelineResult
 from src.audit.models import AuditRecord
 from src.guardrails.risk_engine import RiskAssessment
+from src.guardrails.runner import GuardrailPipelineResult
+from src.retrieval.models import RetrievalResult
+from src.verification.models import Claim, VerificationResult
 
 
 @dataclass

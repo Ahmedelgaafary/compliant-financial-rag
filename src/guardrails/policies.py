@@ -1,7 +1,3 @@
-"""
-Purpose: Define configurable policies – thresholds, allowed query types,
- risk levels, and behaviour rules.
-"""
 # src/guardrails/policies.py
 from dataclasses import dataclass, field
 from typing import List
@@ -9,9 +5,9 @@ from typing import List
 
 @dataclass
 class GuardrailPolicies:
-    """
-    Central configuration for guardrail behaviour.
-    """
+    """Central configuration for guardrail behaviour."""
+
+    max_risk_score: float = 0.7
 
     # Confidence thresholds
     min_overall_confidence: float = 0.7
@@ -22,10 +18,20 @@ class GuardrailPolicies:
     risk_medium_threshold: float = 0.5
     risk_high_threshold: float = 0.8
 
+    # Risk increments (deterministic)
+    risk_increment_rejected: float = 0.3
+    risk_increment_inconclusive: float = 0.1
+    risk_increment_contradiction: float = 0.3
+    risk_increment_low_confidence: float = 0.2
+    risk_increment_missing_provenance: float = 0.2
+    risk_increment_no_evidence: float = 0.4
+    risk_increment_insufficient_evidence: float = 0.2
+    risk_increment_numeric_mismatch: float = 0.4
+
     # Allowed query types – if empty, all are allowed
-    allowed_query_types: List[str] = field(default_factory=lambda: [
-        "numeric", "comparison", "trend", "entity", "period"
-    ])
+    allowed_query_types: List[str] = field(
+        default_factory=lambda: ["numeric", "comparison", "trend", "entity", "period"]
+    )
 
     # Whether to allow generation of claims not directly supported by evidence
     allow_unsupported_claims: bool = False
@@ -43,7 +49,7 @@ class GuardrailPolicies:
     # Whether to include disclaimers when confidence is below threshold
     include_disclaimer_on_low_confidence: bool = True
 
-    # List of forbidden entities (e.g., sensitive names)
+    # List of forbidden entities
     forbidden_entities: List[str] = field(default_factory=list)
 
     def is_query_allowed(self, query_type: str) -> bool:

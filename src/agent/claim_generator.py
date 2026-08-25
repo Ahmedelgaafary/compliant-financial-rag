@@ -12,7 +12,11 @@ class ClaimGenerator:
     def __init__(self, llm: LLMClient = None):
         self.llm = llm or LLMClient()
 
-    def generate(self, query: str, evidence: List[RetrievalResult]) -> Tuple[str, List[Claim]]:
+    def generate(
+        self,
+        query: str,
+        evidence: List[RetrievalResult],
+    ) -> Tuple[str, List[Claim]]:
         evidence_text = "\n".join([f"- {r.text}" for r in evidence])
         prompt = (
             f"Based on the following evidence, generate one concise financial claim "
