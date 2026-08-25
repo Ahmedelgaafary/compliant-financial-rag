@@ -1,6 +1,6 @@
 """"
-This component handles writing audit records to a persistent store (e.g., JSON file, SQLite, or a cloud database). 
-For now, we use a simple file‑based logger.
+("This component handles writing audit records to a persistent store "
+ "(e.g., JSON file, SQLite, or a cloud database).")
 """
 # src/audit/audit_log.py
 import json
@@ -45,7 +45,9 @@ class AuditLogger:
             for k, v in record.__dict__.items()
         }
         # Convert datetime to ISO string for JSON
-        if "timestamp" in record_dict and isinstance(record_dict["timestamp"], datetime):
+        if "timestamp" in record_dict and isinstance(
+            record_dict["timestamp"], datetime
+        ):
             record_dict["timestamp"] = record_dict["timestamp"].isoformat()
         if "review_timestamp" in record_dict and isinstance(record_dict["review_timestamp"], datetime):
             record_dict["review_timestamp"] = record_dict["review_timestamp"].isoformat()
