@@ -1,5 +1,6 @@
 """
-Persists audit records to a JSON file using marshmallow serialization.
+Persists audit records to
+ a JSON file using marshmallow serialization.
 """
 
 import json
