@@ -1,5 +1,3 @@
-
-
 # Salem's Guardrails & Audit Review
 
 **Date**: 2026-08-25  
@@ -219,7 +217,7 @@
   - `get_pending_reviews()` and `submit_review_decision()`.
 - **Missing**:
   - Tests.
-  - The `AuditRecord` construction in `initiate_review` may be missing required fields (e.g., `risk_assessment`, `created_at`) – this was a bug we encountered earlier; it may have been fixed, but need to verify.
+  - The `AuditRecord` construction in `initiate_review` may be missing required fields (e.g., `risk_assessment`, `created_at`) – we encountered this bug earlier; it may have been fixed, but need to verify.
   - In `submit_review_decision`, it calls `logger.log(record)` again – might create duplicates (depending on logger implementation).
 - **Tests available**: Indirect via `test_agent_pipeline.py` (mocked).
 - **Recommended changes**:
@@ -245,7 +243,7 @@
 
 ### Specific Issues
 
-1. **Status enum mismatch** across modules: `VerificationResult.status` is a `VerificationStatus` enum, but `confidence.py`, `router.py`, and some parts of `generation_guard.py` compare with string literals (`"VERIFIED"`, `"INCONCLUSIVE"`). This will cause errors.
+1. **Status enum mismatch** across modules: `VerificationResult.status` is a `VerificationStatus` enum, but `confidence.py`, `generation_guard.py`, and `router.py` compare with string literals (`"VERIFIED"`, `"INCONCLUSIVE"`). This will cause errors.
 
 2. **`AuditRecord` construction incomplete**: In `review_service.py`, the `AuditRecord` created in `initiate_review` passes `confidence_score`, `risk_score`, etc., but the model now also requires `risk_assessment` and `created_at` – likely missing, causing runtime errors.
 
@@ -257,7 +255,70 @@
 
 ---
 
-## 4. Recommended Implementation Order
+## 4. Related Verification & Agent Modules
+
+### `src/verification/verification_engine.py`
+
+- **Current responsibility**: Should serve as the orchestration layer for verification (likely a higher‑level engine).  
+- **Implemented**: **None** – file is currently empty.  
+- **Missing**: Entire implementation.  
+- **Tests**: None.  
+- **Recommended changes**: Either implement a verification engine or remove the empty file and rely on `claim_verifier.py` for claim‑level verification.
+
+---
+
+### `src/verification/models.py`
+
+- **Current responsibility**: Define the data models for claims and verification results.  
+- **Implemented**:  
+  - `Claim` dataclass (claim_id, claim_type, subject, value, unit, period, source_chunk_id).  
+  - `VerificationResult` dataclass (claim_id, status, reason, confidence, evidence_chunk_id).  
+  - `VerificationStatus` and `ClaimType` enums.  
+- **Missing**:  
+  - No tests for model validation.  
+  - Some metadata (like `normalized_value`) may be needed by `generation_guard.py` but is absent.  
+- **Tests available**: None.  
+- **Recommended changes**: Extend models if needed to support guardrails, or adjust guardrails to use existing fields.
+
+---
+
+### `src/verification/provenance.py`
+
+- **Current responsibility**: Likely track provenance of evidence chunks (document, page, hash).  
+- **Implemented**: **Does not exist** – file not created.  
+- **Missing**: Entire module.  
+- **Tests**: None.  
+- **Recommended changes**: Implement provenance tracking or consolidate into retrieval models, as `RetrievalResult` already contains provenance fields.
+
+---
+
+### `src/agent/state.py`
+
+- **Current responsibility**: Define the shared `AgentState` for the LangGraph workflow.  
+- **Implemented**:  
+  - `AgentState` dataclass with user_query, retrieval_results, claims, verification_results, guardrail_result, risk_assessment, audit_record, final_answer, etc.  
+- **Missing**:  
+  - No tests.  
+  - Could benefit from methods to convert verification results into a serializable format for audit.  
+- **Tests available**: None.  
+- **Recommended changes**: Add unit tests for state initialization and potential helper methods.
+
+---
+
+### `src/agent/workflow.py`
+
+- **Current responsibility**: High‑level entry point `run_agent(user_query)` that builds the graph and invokes it.  
+- **Implemented**:  
+  - `run_agent()` uses `build_agent_graph()` and returns the final `AgentState`.  
+- **Missing**:  
+  - Error handling (e.g., if the graph fails).  
+  - Optional logging of the flow.  
+- **Tests available**: Indirect via `test_agent_pipeline.py` (uses `graph.invoke` directly).  
+- **Recommended changes**: Add error handling and perhaps return a structured result with metadata.
+
+---
+
+## 5. Recommended Implementation Order
 
 1. **Fix status enum usage** across `confidence.py`, `generation_guard.py`, `router.py` – replace string comparisons with `VerificationStatus` enum.
 2. **Fix `AuditRecord` construction** in `review_service.py` – add missing `risk_assessment` and `created_at` fields.
@@ -272,7 +333,9 @@
 6. **Improve output validator** – implement real checks for unsupported claims and hallucinated citations.
 7. **Consider persistence for audit queue** – replace in‑memory with Redis/DB for production.
 8. **Integrate `decision_rules.json`** into `DecisionEngine` to make recommendations configurable.
-9. **Final integration test** – end‑to‑end test with real components (or thorough mocks) verifying the full flow.
+9. **Implement `verification_engine.py`** if needed, or remove it.
+10. **Implement `provenance.py`** or consolidate provenance into retrieval models.
+11. **Final integration test** – end‑to‑end test with real components (or thorough mocks) verifying the full flow.
 
 ---
 
