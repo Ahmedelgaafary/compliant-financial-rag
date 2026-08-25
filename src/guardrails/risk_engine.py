@@ -113,10 +113,9 @@ class RiskEngine:
 
         # Determine risk level and action
         risk_level = self.policies.get_risk_level(risk_score)
-        if (
-            risk_level == "HIGH"  # or "CRITICAL" if you add it
-            or (self.policies.block_on_numeric_mismatch and numeric_mismatch)
-        ):
+
+        # Only block if explicitly configured and numeric mismatch exists
+        if self.policies.block_on_numeric_mismatch and numeric_mismatch:
             recommended_action = "BLOCK"
         elif risk_level == "HIGH":
             recommended_action = "HUMAN_REVIEW"

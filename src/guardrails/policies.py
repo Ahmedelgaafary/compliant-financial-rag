@@ -47,7 +47,7 @@ class GuardrailPolicies:
 
     # If a critical verification failure (e.g., numeric mismatch) occurs,
     # whether to block output entirely
-    block_on_numeric_mismatch: bool = True
+    block_on_numeric_mismatch: bool = False
 
     # Whether to include disclaimers when confidence is below threshold
     include_disclaimer_on_low_confidence: bool = True
