@@ -129,4 +129,4 @@ class RiskEngine:
             risk_level=risk_level,
             triggers=triggers,
             recommended_action=recommended_action,
-        )
+            )
