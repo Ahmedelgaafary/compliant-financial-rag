@@ -1,13 +1,9 @@
-from src.verification.contradiction_detector import (
-    ContradictionDetector,
-)
 from src.verification.models import (
     Claim,
     ClaimType,
     VerificationResult,
     VerificationStatus,
 )
-from src.verification.numeric_verifier import NumericVerifier
 from src.verification.reasons import VerificationReason
 from src.verification.verification_engine import (
     VerificationEngine,
