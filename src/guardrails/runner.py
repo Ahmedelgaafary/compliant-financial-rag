@@ -1,22 +1,19 @@
-"""
-This orchestrates all guardrails in sequence, 
-providing a single entry point for the agent.
-"""
 # src/guardrails/runner.py
 from dataclasses import dataclass
 from typing import List, Optional
 
-from src.guardrails.confidence import ConfidenceScore, ConfidenceScorer
-from src.guardrails.generation_guard import GenerationGuard, GenerationGuardResult
-from src.guardrails.policies import GuardrailPolicies
-from src.guardrails.risk_engine import RiskAssessment, RiskEngine
-from src.guardrails.validation import (
+from src.retrieval.models import RetrievalResult
+from src.verification.models import VerificationResult
+
+from .confidence import ConfidenceScore, ConfidenceScorer
+from .generation_guard import GenerationGuard, GenerationGuardResult
+from .policies import GuardrailPolicies
+from .risk_engine import RiskAssessment, RiskEngine
+from .validation import (
     InputValidator,
     OutputValidator,
     RetrievalValidator,
 )
-from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult
 
 
 @dataclass
@@ -27,23 +24,15 @@ class GuardrailPipelineResult:
     retrieval_issues: List[str]
     confidence_score: ConfidenceScore
     risk_assessment: RiskAssessment
+    should_route_to_audit: bool
     generation_guard_result: Optional[GenerationGuardResult]
     output_valid: bool
     output_issues: List[str]
     final_safe_output: str
-    should_route_to_audit: bool
 
 
 class GuardrailRunner:
-    """
-    Orchestrates all guardrails in the correct sequence:
-    1. Input Validation
-    2. Retrieval Validation
-    3. Confidence Scoring
-    4. Risk Assessment
-    5. Generation Guard (if LLM output is provided)
-    6. Output Validation
-    """
+    """Orchestrates all guardrails in sequence."""
 
     def __init__(self, policies: GuardrailPolicies):
         self.policies = policies
@@ -61,10 +50,7 @@ class GuardrailRunner:
         verification_results: List[VerificationResult],
         raw_llm_output: Optional[str] = None,
     ) -> GuardrailPipelineResult:
-        """
-        Executes all guardrails.
-        If any early stage fails critically, later stages may be skipped.
-        """
+        """Executes all guardrails in order."""
         # 1. Input Validation
         input_valid = self.input_validator.validate(query)
         if not input_valid:
@@ -82,11 +68,10 @@ class GuardrailRunner:
             )
 
         # 2. Retrieval Validation
-        retrieval_valid, retrieval_issues = (
-        self.retrieval_validator.validate(retrieval_results)
+        retrieval_valid, retrieval_issues = self.retrieval_validator.validate(
+            retrieval_results
         )
         if not retrieval_valid and self.policies.min_retrieval_confidence > 0.3:
-            # If retrieval fails critically, don't proceed to LLM
             return GuardrailPipelineResult(
                 input_valid=True,
                 retrieval_valid=False,
@@ -102,19 +87,19 @@ class GuardrailRunner:
 
         # 3. Confidence Scoring
         confidence = self.confidence_scorer.compute(
-        retrieval_results, verification_results
+            retrieval_results, verification_results
         )
 
         # 4. Risk Assessment
         risk = self.risk_engine.assess(
-        retrieval_results, verification_results, confidence
+            retrieval_results, verification_results, confidence
         )
 
         # 5. Generation Guard (if LLM output is provided)
         gen_guard_result = None
         if raw_llm_output:
             gen_guard_result = self.generation_guard.guard(
-            raw_llm_output, verification_results
+                raw_llm_output, verification_results
             )
 
         # 6. Output Validation
@@ -123,34 +108,30 @@ class GuardrailRunner:
         final_output = ""
 
         if raw_llm_output:
-            # Use either sanitized output from generation guard or raw
             if gen_guard_result:
                 final_output = gen_guard_result.sanitized_text
-                # If generation guard found issues, update output_valid
                 if not gen_guard_result.is_safe:
                     output_valid = False
                     output_issues.extend(gen_guard_result.issues)
             else:
                 final_output = raw_llm_output
 
-            # Run output validator
             output_valid, val_issues = self.output_validator.validate(
                 final_output,
                 verification_results,
-                confidence.overall
+                confidence.overall,
             )
             output_issues.extend(val_issues)
         else:
-            # No LLM output, just a fallback
             final_output = "No answer generated due to risk constraints."
             output_valid = False
             output_issues.append("NO_LLM_OUTPUT")
 
         # Determine if we should route to audit
         should_route_to_audit = (
-            risk.recommended_action in ["HUMAN_REVIEW", "BLOCK"] or
-            not output_valid or
-            not retrieval_valid
+            risk.recommended_action in ["HUMAN_REVIEW", "BLOCK"]
+            or not output_valid
+            or not retrieval_valid
         )
 
         return GuardrailPipelineResult(

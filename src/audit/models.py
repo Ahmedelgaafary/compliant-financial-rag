@@ -33,10 +33,16 @@ class AuditRecord:
     verification_status: str
     verification_reason: str
     risk_level: str
-    evidence: List[dict]  # List of evidence chunks
+    evidence: List[dict]  
+    # List of evidence chunks
     document_id: str
     document_sha256: str
     page_number: int
+    risk_assessment: str
+    document_id: str
+    document_sha256: str
+    page_number: int
+    created_at: datetime
     
     # Review fields (populated later)
     reviewer: Optional[str] = None

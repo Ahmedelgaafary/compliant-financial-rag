@@ -19,14 +19,17 @@ class GuardrailPolicies:
     risk_high_threshold: float = 0.8
 
     # Risk increments (deterministic)
-    risk_increment_rejected: float = 0.3
+    risk_increment_rejected: float = 0.5
     risk_increment_inconclusive: float = 0.1
     risk_increment_contradiction: float = 0.3
-    risk_increment_low_confidence: float = 0.2
-    risk_increment_missing_provenance: float = 0.2
-    risk_increment_no_evidence: float = 0.4
+    risk_increment_low_confidence: float = 0.6
+    risk_increment_missing_provenance: float = 0.8
+    risk_increment_no_evidence: float = 0.8
     risk_increment_insufficient_evidence: float = 0.2
     risk_increment_numeric_mismatch: float = 0.4
+
+    # Evidence minimum
+    min_evidence_chunks: int = 2
 
     # Allowed query types – if empty, all are allowed
     allowed_query_types: List[str] = field(

@@ -33,15 +33,6 @@ class RiskEngine:
         verification_results: List[VerificationResult],
         confidence: ConfidenceScore,
     ) -> RiskAssessment:
-        """
-        Compute a deterministic risk score based on:
-        - verification status (VERIFIED, INCONCLUSIVE, REJECTED)
-        - contradictions (e.g., evidence contradicts)
-        - confidence (overall and per-claim)
-        - provenance (missing chunk_id)
-        - number of evidence chunks
-        - policy thresholds
-        """
         risk_score = 0.0
         triggers = []
 
@@ -123,7 +114,7 @@ class RiskEngine:
         # Determine risk level and action
         risk_level = self.policies.get_risk_level(risk_score)
         if (
-            risk_level == "CRITICAL"
+            risk_level == "HIGH"  # or "CRITICAL" if you add it
             or (self.policies.block_on_numeric_mismatch and numeric_mismatch)
         ):
             recommended_action = "BLOCK"
