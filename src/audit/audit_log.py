@@ -1,8 +1,4 @@
-"""
-Persists audit records to
- a JSON file using marshmallow serialization.
-"""
-
+# src/audit/audit_log.py
 import json
 from pathlib import Path
 from typing import List, Optional
@@ -18,10 +14,12 @@ class AuditRecordSchema(Schema):
     timestamp = fields.DateTime(required=True)
     user_query = fields.Str(required=True)
     claim = fields.Str(required=True)
+    claim_id = fields.Str(allow_none=True)
     verification_status = fields.Str(required=True)
     verification_reason = fields.Str(required=True)
     risk_level = fields.Str(required=True)
     evidence = fields.List(fields.Dict(), required=True)
+    provenance = fields.List(fields.Dict())
     document_id = fields.Str(required=True)
     document_sha256 = fields.Str(required=True)
     page_number = fields.Int(required=True)
@@ -40,13 +38,15 @@ class AuditRecordSchema(Schema):
     @post_load
     def make_record(self, data, **kwargs) -> AuditRecord:
         """Convert loaded dict back to AuditRecord instance."""
+        data.setdefault('claim_id', '')
+        data.setdefault('provenance', [])
         data.setdefault('triggers', [])
         data.setdefault('verification_results', [])
         return AuditRecord(**data)
 
 
 class AuditLogger:
-    """Persists audit records to a JSON file using marshmallow."""
+    """Persists audit records to a JSON file (append-only)."""
 
     def __init__(self, log_dir: str = "audit_logs"):
         self.log_dir = Path(log_dir)
@@ -68,18 +68,20 @@ class AuditLogger:
             json.dump(records, f, indent=2, default=str)
 
     def log(self, record: AuditRecord) -> None:
+        """Append a record. Raises if the same audit_id already exists."""
         records = self._load_all()
+        existing_ids = {rec.get("audit_id") for rec in records}
+        if record.audit_id in existing_ids:
+            raise ValueError(f"Audit record with ID {record.audit_id} already exists")
         dumped = self.schema.dump(record)
         records.append(dumped)
         self._save_all(records)
 
     def get_all(self) -> List[AuditRecord]:
-        records = self._load_all()
-        return self.schema.load(records, many=True)
+        return self.schema.load(self._load_all(), many=True)
 
     def get_by_audit_id(self, audit_id: str) -> Optional[AuditRecord]:
-        records = self._load_all()
-        for rec in records:
+        for rec in self._load_all():
             if rec.get("audit_id") == audit_id:
                 return self.schema.load(rec)
         return None

@@ -4,21 +4,18 @@ Verifies that HIGH risk cases are queued, LOW risk cases bypass queue,
 and that evidence/provenance are preserved.
 """
 
-import pytest
-from datetime import datetime
-from unittest.mock import Mock
 
+import pytest
+
+from src.audit.models import AuditStatus
+from src.audit.review_service import ReviewService
 from src.guardrails.policies import GuardrailPolicies
-from src.guardrails.risk_engine import RiskEngine, RiskAssessment
+from src.guardrails.risk_engine import RiskAssessment, RiskEngine
+from src.retrieval.models import RetrievalResult
 from src.verification.models import (
     VerificationResult,
     VerificationStatus,
 )
-from src.retrieval.models import RetrievalResult
-from src.audit.models import AuditStatus
-from src.audit.queue import AuditQueue
-from src.audit.review_service import ReviewService
-from src.audit.router import AuditRouter
 
 
 def make_retrieval_result(chunk_id="chunk1", document_id="doc1", score=0.9, page=3):
@@ -34,7 +31,11 @@ def make_retrieval_result(chunk_id="chunk1", document_id="doc1", score=0.9, page
     )
 
 
-def make_verification_result(status, reason, confidence=1.0, evidence_chunk_id="chunk1"):
+def make_verification_result(
+    status,
+    reason,
+    confidence=1.0,
+    evidence_chunk_id="chunk1"):
     return VerificationResult(
         claim_id="claim1",
         status=status,
@@ -94,7 +95,8 @@ def test_low_risk_does_not_create_audit_record(review_service):
         page_number=retrieval[0].page_number,
     )
 
-    # Since risk is LOW and should_create_audit_record=False, audit_record should be None
+    # Since risk is LOW and should_create_audit_record=False, 
+    #audit_record should be None
     assert outcome.audit_record is None
     assert outcome.final_action == "AUTO_ANSWER"
 

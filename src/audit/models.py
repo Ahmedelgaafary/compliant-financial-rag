@@ -30,15 +30,15 @@ class AuditRecord:
     verification_status: str
     verification_reason: str
     risk_level: str
-    evidence: List[dict]
-    document_id: str
-    document_sha256: str
-    page_number: int
-    # Added with defaults to avoid breaking existing code
-    risk_assessment: str = ""
+    evidence: List[dict] = field(default_factory=list)
+    provenance: List[dict] = field(default_factory=list)      
+    claim_id: str = ""                                        
+    document_id: str = ""
+    document_sha256: str = ""
+    page_number: int = 0
+    risk_assessment: str = ""                                 
     created_at: datetime = field(default_factory=datetime.now)
-
-    # Review fields (populated later)
+    # Review fields
     reviewer: Optional[str] = None
     review_decision: Optional[ReviewDecision] = None
     review_notes: Optional[str] = None
