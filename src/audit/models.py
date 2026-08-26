@@ -1,6 +1,3 @@
-"""
-Defines the audit schemas, statuses, and records.
-"""
 # src/audit/models.py
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,24 +30,21 @@ class AuditRecord:
     verification_status: str
     verification_reason: str
     risk_level: str
-    evidence: List[dict]  
-    # List of evidence chunks
+    evidence: List[dict]
     document_id: str
     document_sha256: str
     page_number: int
-    risk_assessment: str
-    document_id: str
-    document_sha256: str
-    page_number: int
-    created_at: datetime
-    
+    # Added with defaults to avoid breaking existing code
+    risk_assessment: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+
     # Review fields (populated later)
     reviewer: Optional[str] = None
     review_decision: Optional[ReviewDecision] = None
     review_notes: Optional[str] = None
     review_timestamp: Optional[datetime] = None
     status: AuditStatus = AuditStatus.PENDING
-    
+
     # Additional metadata
     confidence_score: Optional[float] = None
     risk_score: Optional[float] = None

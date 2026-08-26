@@ -79,10 +79,12 @@ class ReviewService:
                 document_id=document_id,
                 document_sha256=document_sha256,
                 page_number=page_number,
-                confidence_score=risk_assessment.risk_score,  # approximate
+                confidence_score=risk_assessment.risk_score, 
                 risk_score=risk_assessment.risk_score,
                 triggers=risk_assessment.triggers,
                 verification_results=[v.__dict__ for v in verification_results],
+                risk_assessment=str(risk_assessment),
+                created_at=datetime.now(),
             )
             # Enqueue it
             audit_id = self.queue.enqueue(audit_record)
