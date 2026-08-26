@@ -255,4 +255,4 @@ def test_non_human_routing_cannot_enter_queue() -> None:
             provenance=_provenance(),
             evidence_text="Evidence.",
         )
-main
+main ()
