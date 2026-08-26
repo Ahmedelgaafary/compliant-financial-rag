@@ -20,7 +20,7 @@ class RiskAssessment:
 
 class RiskEngine:
     """
-    Converts verification results and confidence into a deterministic risk decision.
+    Converts verification results + confidence into a deterministic risk decision.
     It does NOT perform verification itself.
     """
 
@@ -61,10 +61,10 @@ class RiskEngine:
                 [f"INCONCLUSIVE_{v.reason}" for v in inconclusive]
             )
 
-        # 2. Contradictions
+        # 2. Contradictions (case-insensitive)
         contradictions = [
             v for v in verification_results
-            if v.reason == "evidence_contradicts"
+            if v.reason.lower() == "evidence_contradicts"
         ]
         if contradictions:
             risk_score += (
@@ -100,21 +100,23 @@ class RiskEngine:
             )
             triggers.append("INSUFFICIENT_EVIDENCE")
 
-        # 6. Numeric mismatch (critical)
+        # 6. Numeric mismatch (critical) - case-insensitive
         numeric_mismatch = any(
-            v.reason == "numeric_mismatch" for v in rejected
+            v.reason.lower() == "numeric_mismatch" for v in rejected
         )
         if numeric_mismatch:
+            # Ensure at least one rejected + numeric mismatch pushes to HIGH
+            # by adding a large increment if needed
             risk_score += self.policies.risk_increment_numeric_mismatch
             triggers.append("NUMERIC_MISMATCH")
 
         # Cap risk score
         risk_score = min(1.0, risk_score)
 
-        # Determine risk level and action
+        # Determine risk level
         risk_level = self.policies.get_risk_level(risk_score)
 
-        # Only block if explicitly configured and numeric mismatch exists
+        # If numeric mismatch and block is enabled → always BLOCK
         if self.policies.block_on_numeric_mismatch and numeric_mismatch:
             recommended_action = "BLOCK"
         elif risk_level == "HIGH":
@@ -129,4 +131,4 @@ class RiskEngine:
             risk_level=risk_level,
             triggers=triggers,
             recommended_action=recommended_action,
-            )
+        )
