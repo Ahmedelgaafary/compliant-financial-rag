@@ -1,8 +1,9 @@
 # src/agent/node.py
 import re
 
-from src.agent.state import AgentState
+from src.agent.state import AgentState, FinalResponseStatus
 from src.audit.review_service import ReviewService
+from src.guardrails.final_safety import FinalSafetyValidator
 from src.guardrails.policies import GuardrailPolicies
 from src.guardrails.runner import GuardrailRunner
 from src.llm.client import LLMClient
@@ -125,9 +126,33 @@ def answer_generation_node(state: AgentState) -> AgentState:
     state.final_answer = llm.generate(prompt)
     return state
 
-
 def output_guard_node(state: AgentState) -> AgentState:
-    """Final output validation (already partly done)."""
+
+    validator = FinalSafetyValidator()
+    confidence_score = (
+        state.guardrail_result.confidence_score.overall
+        if state.guardrail_result and state.guardrail_result.confidence_score
+        else 1.0  # default to allow valid answers when confidence not provided
+    )
+
+    result = validator.validate(
+        generated_answer=state.final_answer,
+        verification_results=state.verification_results,
+        retrieval_results=state.retrieval_results,
+        risk_assessment=state.risk_assessment,
+        confidence_score=confidence_score,
+    )
+
+    if not result.allowed:
+        state.final_answer = (
+            "This response could not be validated for safety. "
+            "Please consult the original source or contact support."
+        )
+        state.error = "; ".join(result.reasons)
+        state.final_response_status = FinalResponseStatus.BLOCKED
+    else:
+        state.final_response_status = FinalResponseStatus.GENERATED
+
     return state
 
 
