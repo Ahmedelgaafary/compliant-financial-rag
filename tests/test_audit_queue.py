@@ -1,159 +1,96 @@
-from datetime import timezone
+from datetime import datetime
 
-import pytest
-
-from src.verification.audit_queue import (
-    AuditQueueItem,
-    AuditQueueStatus,
-)
-from src.verification.models import (
-    Claim,
-    ClaimType,
-    VerificationResult,
-    VerificationStatus,
-)
-from src.verification.provenance import EvidenceProvenance
-from src.verification.reasons import VerificationReason
-from src.verification.risk import (
-    RiskAssessment,
-    RiskLevel,
-    RoutingDecision,
-)
+from src.audit.models import AuditRecord, AuditStatus, ReviewDecision
+from src.audit.queue import AuditQueue
 
 
-def _claim() -> Claim:
-    return Claim(
-        claim_id="claim-001",
-        claim_type=ClaimType.NUMERIC,
-        subject="revenue",
-        value="42.8",
-        unit="USD billion",
-        period="2025",
-        source_chunk_id="chunk-047",
+def make_audit_record():
+    return AuditRecord(
+        audit_id="",  
+        timestamp=datetime.now(),
+        created_at=datetime.now(),
+        user_query="What was revenue?",
+        claim="Revenue was $42.8B",
+        verification_status="VERIFIED",
+        verification_reason="numeric_match",
+        risk_level="LOW",
+        risk_assessment="some risk",
+        evidence=[],
+        document_id="doc1",
+        document_sha256="abc123",
+        page_number=3,
+        confidence_score=0.9,
+        risk_score=0.1,
+        triggers=[],
+        verification_results=[],
     )
 
 
-def _verification() -> VerificationResult:
-    return VerificationResult(
-        claim_id="claim-001",
-        status=VerificationStatus.REJECTED,
-        reason=VerificationReason.NUMERIC_MISMATCH,
-        confidence=1.0,
-        evidence_chunk_id="chunk-047",
-    )
+def test_enqueue_generates_unique_ids():
+    queue = AuditQueue()
+    record1 = make_audit_record()
+    record2 = make_audit_record()
+    id1 = queue.enqueue(record1)
+    id2 = queue.enqueue(record2)
+    assert id1 != id2
+    assert record1.audit_id == id1
+    assert record2.audit_id == id2
 
 
-def _risk() -> RiskAssessment:
-    return RiskAssessment(
-        level=RiskLevel.HIGH,
-        decision=RoutingDecision.HUMAN_AUDIT,
-        reason="Evidence contradicts the claim.",
-    )
+def test_get_pending():
+    queue = AuditQueue()
+    record1 = make_audit_record()
+    record2 = make_audit_record()
+    queue.enqueue(record1)
+    queue.enqueue(record2)
+    pending = queue.get_pending()
+    assert len(pending) == 2
+    # after starting review, not pending anymore
+    queue.start_review(record1.audit_id, "reviewer")
+    pending = queue.get_pending()
+    assert len(pending) == 1
+    assert pending[0].audit_id == record2.audit_id
 
 
-def _provenance() -> EvidenceProvenance:
-    return EvidenceProvenance(
-        document_id="annual-report-2025",
-        document_hash="a" * 64,
-        chunk_id="chunk-047",
-        page_number=47,
-        section="Consolidated Statements",
-    )
+def test_get_by_id():
+    queue = AuditQueue()
+    record = make_audit_record()
+    audit_id = queue.enqueue(record)
+    fetched = queue.get_by_id(audit_id)
+    assert fetched is not None
+    assert fetched.audit_id == audit_id
+    assert fetched.user_query == "What was revenue?"
 
 
-def _create_item() -> AuditQueueItem:
-    return AuditQueueItem.create(
-        queue_id="audit-001",
-        claim=_claim(),
-        verification=_verification(),
-        risk=_risk(),
-        provenance=_provenance(),
-        evidence_text=(
-            "Total revenue was $42.8 billion in 2025."
-        ),
-    )
+def test_resolve_item():
+    queue = AuditQueue()
+    record = make_audit_record()
+    audit_id = queue.enqueue(record)
+    assert queue.start_review(audit_id, "reviewer") is True
+    assert queue.resolve(audit_id, ReviewDecision.APPROVED, "Looks good") is True
+    resolved = queue.get_by_id(audit_id)
+    assert resolved.status == AuditStatus.RESOLVED
+    assert resolved.review_decision == ReviewDecision.APPROVED
+    assert resolved.review_notes == "Looks good"
 
 
-def test_create_pending_audit_item() -> None:
-    item = _create_item()
-
-    assert item.queue_id == "audit-001"
-    assert item.status == AuditQueueStatus.PENDING
-    assert item.risk.level == RiskLevel.HIGH
-    assert item.risk.decision == RoutingDecision.HUMAN_AUDIT
-    assert item.created_at.tzinfo == timezone.utc
-
-
-def test_approve_audit_item() -> None:
-    item = _create_item()
-
-    approved = item.approve()
-
-    assert item.status == AuditQueueStatus.PENDING
-    assert approved.status == AuditQueueStatus.APPROVED
-    assert approved.queue_id == item.queue_id
-    assert approved.created_at == item.created_at
+def test_invalid_state_transition_rejected():
+    queue = AuditQueue()
+    record = make_audit_record()
+    audit_id = queue.enqueue(record)
+    # Cannot resolve without starting review
+    assert queue.resolve(audit_id, ReviewDecision.APPROVED, "") is False
+    # Cannot start review on non-existing
+    assert queue.start_review("nonexistent", "reviewer") is False
+    # Cannot start review twice
+    assert queue.start_review(audit_id, "reviewer") is True
+    assert queue.start_review(audit_id, "another") is False
 
 
-def test_reject_audit_item() -> None:
-    item = _create_item()
-
-    rejected = item.reject()
-
-    assert item.status == AuditQueueStatus.PENDING
-    assert rejected.status == AuditQueueStatus.REJECTED
-    assert rejected.queue_id == item.queue_id
-
-
-def test_medium_risk_cannot_enter_human_queue() -> None:
-    risk = RiskAssessment(
-        level=RiskLevel.MEDIUM,
-        decision=RoutingDecision.REVIEW,
-        reason="Additional review required.",
-    )
-
-    with pytest.raises(ValueError):
-        AuditQueueItem.create(
-            queue_id="audit-002",
-            claim=_claim(),
-            verification=_verification(),
-            risk=risk,
-            provenance=_provenance(),
-            evidence_text="Evidence.",
-        )
-
-
-def test_low_risk_cannot_enter_human_queue() -> None:
-    risk = RiskAssessment(
-        level=RiskLevel.LOW,
-        decision=RoutingDecision.AUTO_APPROVE,
-        reason="Verified with high confidence.",
-    )
-
-    with pytest.raises(ValueError):
-        AuditQueueItem.create(
-            queue_id="audit-003",
-            claim=_claim(),
-            verification=_verification(),
-            risk=risk,
-            provenance=_provenance(),
-            evidence_text="Evidence.",
-        )
-
-
-def test_non_human_routing_cannot_enter_queue() -> None:
-    risk = RiskAssessment(
-        level=RiskLevel.HIGH,
-        decision=RoutingDecision.REVIEW,
-        reason="Requires additional review.",
-    )
-
-    with pytest.raises(ValueError):
-        AuditQueueItem.create(
-            queue_id="audit-004",
-            claim=_claim(),
-            verification=_verification(),
-            risk=risk,
-            provenance=_provenance(),
-            evidence_text="Evidence.",
-        )
+def test_evidence_preserved():
+    queue = AuditQueue()
+    record = make_audit_record()
+    record.evidence = [{"chunk_id": "chunk1", "text": "Revenue ..."}]
+    queue.enqueue(record)
+    fetched = queue.get_by_id(record.audit_id)
+    assert fetched.evidence == [{"chunk_id": "chunk1", "text": "Revenue ..."}]

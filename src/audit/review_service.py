@@ -1,0 +1,164 @@
+"""
+Main entry point for the human‑in‑the‑loop audit process.
+It ties together the router, queue, decision engine, and logger.
+"""
+# src/audit/review_service.py
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
+
+from src.audit.audit_log import AuditLogger
+from src.audit.decisions import DecisionEngine, ReviewRecommendation
+from src.audit.models import AuditRecord, ReviewDecision
+from src.audit.queue import AuditQueue
+from src.audit.router import AuditRouter, RoutingAction, RoutingDecision
+from src.guardrails.risk_engine import RiskAssessment
+from src.verification.models import VerificationResult
+
+
+@dataclass
+class ReviewOutcome:
+    """Result of the audit process."""
+    audit_id: str
+    routing_decision: RoutingDecision
+    review_recommendation: Optional[ReviewRecommendation]
+    final_action: str  # "AUTO_ANSWER", "HUMAN_REVIEW", "BLOCK"
+    audit_record: AuditRecord
+
+
+class ReviewService:
+    """
+    Orchestrates the entire audit workflow:
+    1. Route the case.
+    2. If it goes to human review, enqueue it.
+    3. Provide recommendations to the reviewer.
+    4. Log all events.
+    """
+
+    def __init__(self):
+        self.router = AuditRouter()
+        self.queue = AuditQueue()
+        self.decision_engine = DecisionEngine()
+        self.logger = AuditLogger()
+
+    def initiate_review(
+        self,
+        user_query: str,
+        claim: str,
+        verification_status: str,
+        verification_reason: str,
+        risk_assessment: RiskAssessment,
+        verification_results: List[VerificationResult],
+        evidence: List[dict],
+        document_id: str,
+        document_sha256: str,
+        page_number: int,
+        provenance: Optional[List[dict]] = None,
+    ) -> ReviewOutcome:
+        """
+        Starts the audit process for a given case.
+        Returns the routing decision and creates an audit record if needed.
+        """
+        # 1. Route the case
+        routing_decision = self.router.route(risk_assessment, verification_results)
+
+        # 2. Create an audit record (if required)
+        audit_record = None
+        if routing_decision.should_create_audit_record:
+            # Build provenance if not provided
+            if provenance is None:
+                provenance = [
+                    {
+                        "document_id": document_id,
+                        "document_sha256": document_sha256,
+                        "page_number": evidence[i].get("page", page_number),
+                        "text": evidence[i].get("text", ""),
+                    }
+                    for i in range(len(evidence))
+                ]
+            claim_id = ""
+            if verification_results:
+                claim_id = getattr(verification_results[0], "claim_id", "") or ""
+
+            audit_record = AuditRecord(
+                audit_id="",  
+                timestamp=datetime.now(),
+                user_query=user_query,
+                claim=claim,
+                verification_status=verification_status,
+                verification_reason=verification_reason,
+                risk_level=risk_assessment.risk_level,
+                evidence=evidence,
+                provenance=provenance,
+                claim_id=claim_id,
+                document_id=document_id,
+                document_sha256=document_sha256,
+                page_number=page_number,
+                risk_assessment=str(risk_assessment),
+                created_at=datetime.now(),
+                confidence_score=risk_assessment.risk_score,
+                risk_score=risk_assessment.risk_score,
+                triggers=risk_assessment.triggers,
+                verification_results=[v.__dict__ for v in verification_results],
+            )
+            # Enqueue it
+            audit_id = self.queue.enqueue(audit_record)
+            audit_record.audit_id = audit_id  # update with generated ID
+
+        # 3. If the case is routed to human review, pre‑compute a recommendation
+        recommendation = None
+        if routing_decision.action == RoutingAction.HUMAN_REVIEW and audit_record:
+            dec_result = self.decision_engine.analyze(audit_record)
+            recommendation = dec_result.recommendation
+            audit_record.review_notes = dec_result.suggested_notes
+
+        # 4. Log the record if created
+        if audit_record:
+            self.logger.log(audit_record)
+
+        # 5. Determine final action for the system
+        if routing_decision.action == RoutingAction.HUMAN_REVIEW:
+            final_action = "HUMAN_REVIEW"
+        elif routing_decision.action == RoutingAction.BLOCK:
+            final_action = "BLOCK"
+        else:
+            final_action = "AUTO_ANSWER"
+
+        return ReviewOutcome(
+            audit_id=audit_record.audit_id if audit_record else "",
+            routing_decision=routing_decision,
+            review_recommendation=recommendation,
+            final_action=final_action,
+            audit_record=audit_record,
+        )
+
+    def get_pending_reviews(self) -> List[AuditRecord]:
+        """Get all pending audit records from the queue."""
+        return self.queue.get_pending()
+        
+    def submit_review_decision(
+       self,
+       audit_id: str,
+       decision: ReviewDecision,
+       notes: str,
+       reviewer: str,
+    ) -> bool:
+       """
+       Submit a human reviewer's decision for an audit record.
+       Updates the queue and logs the resolution.
+       """
+       # Start review
+       success = self.queue.start_review(audit_id, reviewer)
+       if not success:
+           return False
+
+       # Resolve
+       success = self.queue.resolve(audit_id, decision, notes)
+       if not success:
+           return False
+
+       # NOTE: We do NOT re-log the record here.
+       # The audit log is append-only and immutable.
+       # The resolution decision is stored in the queue (current-state).
+       # The original audit record remains as the historical entry.
+       return True

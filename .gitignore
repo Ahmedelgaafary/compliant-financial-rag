@@ -99,4 +99,6 @@ logs/
 # Ruff
 # ==========================================
 
-.ruff_cache/
+.ruff_cache/audit_logs/
+audit_logs/
+audit_logs/
