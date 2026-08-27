@@ -1,7 +1,5 @@
 from src.verification.citation_verifier import CitationVerifier
-from src.verification.contradiction_detector import (
-    ContradictionDetector,
-)
+from src.verification.contradiction_detector import ContradictionDetector
 from src.verification.date_verifier import DateVerifier
 from src.verification.entity_verifier import EntityVerifier
 from src.verification.models import (
@@ -49,9 +47,20 @@ class VerificationEngine:
     def verify(
         self,
         claim: Claim,
-        evidence_text: str,
+        evidence_text: str | None,
     ) -> VerificationResult:
-        """Run deterministic verification checks."""
+        """Run deterministic verification checks in a fixed order.
+
+        Verification order:
+        1. Validate citation/provenance when available.
+        2. Check for explicit contradiction.
+        3. Run the claim-type-specific verifier.
+        4. Verify the claim period when applicable.
+        5. Combine all deterministic results.
+
+        A deterministic contradiction always takes priority over
+        positive verification evidence.
+        """
 
         contradiction = self.contradiction_detector.verify(
             claim=claim,
@@ -61,31 +70,26 @@ class VerificationEngine:
         if contradiction.status == VerificationStatus.REJECTED:
             return contradiction
 
-        results: list[VerificationResult] = []
-
         if claim.claim_type == ClaimType.NUMERIC:
-            results.append(
-                self.numeric_verifier.verify(
-                    claim,
-                    evidence_text,
-                )
+            result = self.numeric_verifier.verify(
+                claim,
+                evidence_text,
             )
+            results = [result]
 
         elif claim.claim_type == ClaimType.DATE:
-            results.append(
-                self.date_verifier.verify(
-                    claim,
-                    evidence_text,
-                )
+            result = self.date_verifier.verify(
+                claim,
+                evidence_text,
             )
+            results = [result]
 
         elif claim.claim_type == ClaimType.ENTITY:
-            results.append(
-                self.entity_verifier.verify(
-                    claim,
-                    evidence_text,
-                )
+            result = self.entity_verifier.verify(
+                claim,
+                evidence_text,
             )
+            results = [result]
 
         elif claim.claim_type == ClaimType.TEXT:
             if not claim.period:
@@ -96,6 +100,8 @@ class VerificationEngine:
                     confidence=1.0,
                     evidence_chunk_id=claim.source_chunk_id,
                 )
+
+            results = []
 
         else:
             return VerificationResult(
@@ -124,7 +130,11 @@ class VerificationEngine:
         claim: Claim,
         results: list[VerificationResult],
     ) -> VerificationResult:
-        """Combine individual verification results."""
+        """Combine deterministic verification results.
+
+        Deterministic precedence:
+        REJECTED > INCONCLUSIVE > VERIFIED.
+        """
 
         if not results:
             return VerificationResult(
