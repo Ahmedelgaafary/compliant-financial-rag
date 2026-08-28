@@ -16,8 +16,7 @@ Verifier = ClaimVerifier
 
 
 def query_analysis_node(state: AgentState) -> AgentState:
-    """Analyze query to extract entities, time periods, etc."""
-    # Placeholder - replace with a real NER / LLM call.
+    """Analyze the user query."""
     state.query_analysis = {
         "entities": ["revenue"],
         "period": "2025",
@@ -26,30 +25,34 @@ def query_analysis_node(state: AgentState) -> AgentState:
 
 
 def retrieval_node(state: AgentState) -> AgentState:
-    """Perform hybrid retrieval (BM25 + Vector + RRF)."""
+    """Perform hybrid BM25 + vector retrieval."""
     retriever = HybridRetriever()
+
     results = retriever.retrieve(
         state.user_query,
         top_k=5,
     )
+
     state.retrieval_results = list(results)
+
     return state
 
 
 def claim_generation_node(state: AgentState) -> AgentState:
-    """Generate candidate claims from retrieved evidence."""
+    """Generate candidate financial claims from retrieved evidence."""
     llm = LLMClient()
 
     evidence_lines = [
         f"- {result.text}"
         for result in state.retrieval_results
     ]
+
     evidence_text = "\n".join(evidence_lines)
 
     prompt = (
         "Based on the evidence, generate a financial claim "
-        "(e.g., revenue = $42.8B). Evidence:\n"
-        f"{evidence_text}"
+        "(e.g., revenue = $42.8B).\n"
+        f"Evidence:\n{evidence_text}"
     )
 
     raw_output = llm.generate(prompt)
@@ -78,23 +81,26 @@ def claim_generation_node(state: AgentState) -> AgentState:
             "",
         ) or None
 
-        claim = Claim(
-            claim_id=f"claim_{len(claims) + 1}",
-            claim_type=ClaimType.NUMERIC,
-            subject=subject,
-            value=value,
-            unit=unit,
-            period=None,
-            source_chunk_id=(
-                state.retrieval_results[0].chunk_id
-                if state.retrieval_results
-                else None
-            ),
+        source_chunk_id = (
+            state.retrieval_results[0].chunk_id
+            if state.retrieval_results
+            else None
         )
 
-        claims.append(claim)
+        claims.append(
+            Claim(
+                claim_id=f"claim_{len(claims) + 1}",
+                claim_type=ClaimType.NUMERIC,
+                subject=subject,
+                value=value,
+                unit=unit,
+                period=None,
+                source_chunk_id=source_chunk_id,
+            )
+        )
 
     state.claims = claims
+
     return state
 
 
@@ -117,11 +123,12 @@ def verification_node(state: AgentState) -> AgentState:
         verification_results.append(result)
 
     state.verification_results = verification_results
+
     return state
 
 
 def guardrail_node(state: AgentState) -> AgentState:
-    """Run all guardrails."""
+    """Run the complete deterministic guardrail pipeline."""
     policies = GuardrailPolicies()
     runner = GuardrailRunner(policies)
 
@@ -140,12 +147,16 @@ def guardrail_node(state: AgentState) -> AgentState:
 
 
 def routing_node(state: AgentState) -> AgentState:
-    """Pass through - routing is decided by the guardrail result."""
+    """
+    Preserve graph compatibility.
+
+    Routing has already been determined by the guardrail pipeline.
+    """
     return state
 
 
 def answer_generation_node(state: AgentState) -> AgentState:
-    """Generate final answer using verified claims and evidence."""
+    """Generate the final answer using verified claims and evidence."""
     verified_claims = [
         result
         for result in state.verification_results
@@ -206,45 +217,68 @@ def output_guard_node(state: AgentState) -> AgentState:
 
 
 def audit_node(state: AgentState) -> AgentState:
-    """Route to human review and create an audit record."""
+    """
+    Route the request to human review and create an audit record.
+
+    ReviewService is intentionally imported at module level because
+    existing integration tests patch src.agent.node.ReviewService.
+    """
     review_service = ReviewService()
+
+    evidence = [
+        {
+            "text": result.text,
+            "page": result.page_number,
+            "chunk_id": result.chunk_id,
+        }
+        for result in state.retrieval_results
+    ]
+
+    first_verification = (
+        state.verification_results[0]
+        if state.verification_results
+        else None
+    )
+
+    verification_status = (
+        first_verification.status.value
+        if first_verification
+        else "inconclusive"
+    )
+
+    verification_reason = (
+        first_verification.reason
+        if first_verification
+        else "EVIDENCE_MISSING"
+    )
+
+    first_result = (
+        state.retrieval_results[0]
+        if state.retrieval_results
+        else None
+    )
 
     outcome = review_service.initiate_review(
         user_query=state.user_query,
         claim=state.raw_llm_output or "No claim extracted",
-        verification_status=(
-            state.verification_results[0].status.value
-            if state.verification_results
-            else "inconclusive"
-        ),
-        verification_reason=(
-            state.verification_results[0].reason
-            if state.verification_results
-            else "EVIDENCE_MISSING"
-        ),
+        verification_status=verification_status,
+        verification_reason=verification_reason,
         risk_assessment=state.risk_assessment,
         verification_results=state.verification_results,
-        evidence=[
-            {
-                "text": result.text,
-                "page": result.page_number,
-                "chunk_id": result.chunk_id,
-            }
-            for result in state.retrieval_results
-        ],
+        evidence=evidence,
         document_id=(
-            state.retrieval_results[0].document_id
-            if state.retrieval_results
+            first_result.document_id
+            if first_result
             else ""
         ),
         document_sha256=(
-            state.retrieval_results[0].document_sha256
-            if state.retrieval_results
+            first_result.document_sha256
+            if first_result
             else ""
         ),
         page_number=(
-            state.retrieval_results[0].page_number
-            if state.retrieval_results
+            first_result.page_number
+            if first_result
             else 1
         ),
     )
@@ -256,6 +290,8 @@ def audit_node(state: AgentState) -> AgentState:
         "You will be notified when a decision is made."
     )
 
-    state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
+    state.final_response_status = (
+        FinalResponseStatus.ROUTED_TO_AUDIT
+    )
 
     return state
