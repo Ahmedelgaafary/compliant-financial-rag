@@ -1,3 +1,4 @@
+
 import re
 from dataclasses import dataclass
 
@@ -131,12 +132,13 @@ class ClaimExtractor:
         unit: str | None,
         currency: str | None,
     ) -> str | None:
-        """Normalize financial magnitude units."""
+        """Normalize financial magnitude units.
 
-        if unit is None:
-            return currency
-
-        normalized = unit.lower()
+        Currency is intentionally preserved as part of the unit because
+        the project's claim schema and tests treat values such as
+        '$ billion', '€ billion', and 'USD billion' as distinct normalized
+        units.
+        """
 
         aliases = {
             "bn": "billion",
@@ -144,12 +146,16 @@ class ClaimExtractor:
             "k": "thousand",
         }
 
-        normalized = aliases.get(
-            normalized,
-            normalized,
+        normalized_unit = (
+            aliases.get(unit.lower(), unit.lower())
+            if unit
+            else None
         )
 
-        if currency:
-            return f"{currency} {normalized}"
+        if currency and normalized_unit:
+            return f"{currency} {normalized_unit}"
 
-        return normalized
+        if currency:
+            return currency
+
+        return normalized_unit

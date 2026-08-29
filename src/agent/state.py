@@ -9,7 +9,6 @@ from src.guardrails.runner import GuardrailPipelineResult
 from src.retrieval.models import RetrievalResult
 from src.verification.models import Claim, VerificationResult
 
-
 # Backward-compatible public name.
 # The canonical implementation lives in src.audit.models.
 HumanDecision = ReviewDecision

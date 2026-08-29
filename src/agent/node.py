@@ -8,6 +8,7 @@ from src.guardrails.policies import GuardrailPolicies
 from src.guardrails.runner import GuardrailRunner
 from src.llm.client import LLMClient
 from src.retrieval.hybrid import HybridRetriever
+from src.verification.claim_extractor import ClaimExtractor
 from src.verification.claim_verifier import ClaimVerifier
 from src.verification.models import Claim, ClaimType, VerificationStatus
 
@@ -16,7 +17,8 @@ Verifier = ClaimVerifier
 
 
 def query_analysis_node(state: AgentState) -> AgentState:
-    """Analyze the user query."""
+    """Analyze query to extract entities, time periods, etc."""
+    # Placeholder - replace with a real NER / LLM call.
     state.query_analysis = {
         "entities": ["revenue"],
         "period": "2025",
@@ -25,7 +27,7 @@ def query_analysis_node(state: AgentState) -> AgentState:
 
 
 def retrieval_node(state: AgentState) -> AgentState:
-    """Perform hybrid BM25 + vector retrieval."""
+    """Perform hybrid retrieval (BM25 + Vector + RRF)."""
     retriever = HybridRetriever()
 
     results = retriever.retrieve(
@@ -34,12 +36,106 @@ def retrieval_node(state: AgentState) -> AgentState:
     )
 
     state.retrieval_results = list(results)
-
     return state
 
 
+def _extract_generated_claim(
+    text: str,
+    claim_id: str,
+    source_chunk_id: str | None,
+) -> Claim | None:
+    """
+    Extract a numeric claim from LLM output.
+
+    Supports the compact format commonly produced by the claim-generation
+    prompt, for example:
+
+        revenue = $42.8B
+        net income = $3.2 billion
+        assets = EUR 15 million
+
+    This parser is intentionally limited to numeric financial claims.
+    """
+
+    if not text or not text.strip():
+        return None
+
+    pattern = re.compile(
+        r"""
+        ^\s*
+        (?P<subject>[A-Za-z][A-Za-z0-9\s_-]{0,80}?)
+        \s*=\s*
+        (?P<currency>\$|€|£|USD|EUR|GBP)?
+        \s*
+        (?P<number>
+            \d{1,3}(?:,\d{3})*(?:\.\d+)?
+            |
+            \d+(?:\.\d+)?
+        )
+        \s*
+        (?P<unit>
+            billion|million|thousand|bn|mn|k|B|M|K
+        )?
+        \s*
+        (?P<currency_after>USD|EUR|GBP)?
+        \s*$
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    match = pattern.search(text.strip())
+
+    if match is None:
+        return None
+
+    groups = match.groupdict()
+
+    subject = " ".join(groups["subject"].split()).strip()
+
+    number = groups["number"].replace(",", "")
+
+    currency = (
+        groups.get("currency")
+        or groups.get("currency_after")
+    )
+
+    unit = groups.get("unit")
+
+    aliases = {
+        "b": "billion",
+        "bn": "billion",
+        "m": "million",
+        "mn": "million",
+        "k": "thousand",
+    }
+
+    normalized_unit = None
+
+    if unit:
+        normalized_unit = aliases.get(
+            unit.lower(),
+            unit.lower(),
+        )
+
+    value = number
+
+    if currency:
+        value = f"{currency} {value}"
+
+    return Claim(
+        claim_id=claim_id,
+        claim_type=ClaimType.NUMERIC,
+        subject=subject,
+        value=value,
+        unit=normalized_unit,
+        period=None,
+        source_chunk_id=source_chunk_id,
+    )
+
+
 def claim_generation_node(state: AgentState) -> AgentState:
-    """Generate candidate financial claims from retrieved evidence."""
+    """Generate and deterministically extract candidate claims."""
+
     llm = LLMClient()
 
     evidence_lines = [
@@ -51,61 +147,48 @@ def claim_generation_node(state: AgentState) -> AgentState:
 
     prompt = (
         "Based on the evidence, generate a financial claim "
-        "(e.g., revenue = $42.8B).\n"
-        f"Evidence:\n{evidence_text}"
+        "(e.g., revenue = $42.8B). Evidence:\n"
+        f"{evidence_text}"
     )
 
     raw_output = llm.generate(prompt)
+
     state.raw_llm_output = raw_output
 
-    match = re.search(
-        r"(\w+)\s*=\s*\$?(\d+\.?\d*)\s*([BMK]?)",
-        raw_output,
-        re.IGNORECASE,
+    source_chunk_id = (
+        state.retrieval_results[0].chunk_id
+        if state.retrieval_results
+        else None
     )
 
-    claims: list[Claim] = []
+    extractor = ClaimExtractor()
 
-    if match:
-        subject = match.group(1)
-        value = f"${match.group(2)}"
+    extraction = extractor.extract(
+        text=raw_output,
+        claim_id="claim_1",
+        source_chunk_id=source_chunk_id,
+    )
 
-        unit_map = {
-            "B": "billion",
-            "M": "million",
-            "K": "thousand",
-        }
+    claim = extraction.claim
 
-        unit = unit_map.get(
-            match.group(3).upper(),
-            "",
-        ) or None
-
-        source_chunk_id = (
-            state.retrieval_results[0].chunk_id
-            if state.retrieval_results
-            else None
+    # The deterministic ClaimExtractor handles natural-language claims.
+    # LLM output may instead use the compact "subject = value" format,
+    # so support that format as a controlled fallback.
+    if claim is None:
+        claim = _extract_generated_claim(
+            text=raw_output,
+            claim_id="claim_1",
+            source_chunk_id=source_chunk_id,
         )
 
-        claims.append(
-            Claim(
-                claim_id=f"claim_{len(claims) + 1}",
-                claim_type=ClaimType.NUMERIC,
-                subject=subject,
-                value=value,
-                unit=unit,
-                period=None,
-                source_chunk_id=source_chunk_id,
-            )
-        )
-
-    state.claims = claims
+    state.claims = [claim] if claim is not None else []
 
     return state
 
 
 def verification_node(state: AgentState) -> AgentState:
     """Run deterministic verification on all extracted claims."""
+
     verifier = Verifier()
 
     evidence_text = "\n".join(
@@ -120,7 +203,9 @@ def verification_node(state: AgentState) -> AgentState:
             claim,
             evidence_text,
         )
-        verification_results.append(result)
+
+        if result is not None:
+            verification_results.append(result)
 
     state.verification_results = verification_results
 
@@ -128,7 +213,8 @@ def verification_node(state: AgentState) -> AgentState:
 
 
 def guardrail_node(state: AgentState) -> AgentState:
-    """Run the complete deterministic guardrail pipeline."""
+    """Run all guardrails."""
+
     policies = GuardrailPolicies()
     runner = GuardrailRunner(policies)
 
@@ -147,16 +233,13 @@ def guardrail_node(state: AgentState) -> AgentState:
 
 
 def routing_node(state: AgentState) -> AgentState:
-    """
-    Preserve graph compatibility.
-
-    Routing has already been determined by the guardrail pipeline.
-    """
+    """Pass through - routing is decided by the guardrail result."""
     return state
 
 
 def answer_generation_node(state: AgentState) -> AgentState:
-    """Generate the final answer using verified claims and evidence."""
+    """Generate final answer using verified claims and evidence."""
+
     verified_claims = [
         result
         for result in state.verification_results
@@ -177,6 +260,7 @@ def answer_generation_node(state: AgentState) -> AgentState:
     )
 
     llm = LLMClient()
+
     state.final_answer = llm.generate(prompt)
 
     return state
@@ -184,6 +268,7 @@ def answer_generation_node(state: AgentState) -> AgentState:
 
 def output_guard_node(state: AgentState) -> AgentState:
     """Validate the generated answer before returning it."""
+
     validator = FinalSafetyValidator()
 
     confidence_score = (
@@ -217,68 +302,46 @@ def output_guard_node(state: AgentState) -> AgentState:
 
 
 def audit_node(state: AgentState) -> AgentState:
-    """
-    Route the request to human review and create an audit record.
+    """Route to human review and create an audit record."""
 
-    ReviewService is intentionally imported at module level because
-    existing integration tests patch src.agent.node.ReviewService.
-    """
     review_service = ReviewService()
-
-    evidence = [
-        {
-            "text": result.text,
-            "page": result.page_number,
-            "chunk_id": result.chunk_id,
-        }
-        for result in state.retrieval_results
-    ]
-
-    first_verification = (
-        state.verification_results[0]
-        if state.verification_results
-        else None
-    )
-
-    verification_status = (
-        first_verification.status.value
-        if first_verification
-        else "inconclusive"
-    )
-
-    verification_reason = (
-        first_verification.reason
-        if first_verification
-        else "EVIDENCE_MISSING"
-    )
-
-    first_result = (
-        state.retrieval_results[0]
-        if state.retrieval_results
-        else None
-    )
 
     outcome = review_service.initiate_review(
         user_query=state.user_query,
         claim=state.raw_llm_output or "No claim extracted",
-        verification_status=verification_status,
-        verification_reason=verification_reason,
+        verification_status=(
+            state.verification_results[0].status.value
+            if state.verification_results
+            else "inconclusive"
+        ),
+        verification_reason=(
+            state.verification_results[0].reason
+            if state.verification_results
+            else "EVIDENCE_MISSING"
+        ),
         risk_assessment=state.risk_assessment,
         verification_results=state.verification_results,
-        evidence=evidence,
+        evidence=[
+            {
+                "text": result.text,
+                "page": result.page_number,
+                "chunk_id": result.chunk_id,
+            }
+            for result in state.retrieval_results
+        ],
         document_id=(
-            first_result.document_id
-            if first_result
+            state.retrieval_results[0].document_id
+            if state.retrieval_results
             else ""
         ),
         document_sha256=(
-            first_result.document_sha256
-            if first_result
+            state.retrieval_results[0].document_sha256
+            if state.retrieval_results
             else ""
         ),
         page_number=(
-            first_result.page_number
-            if first_result
+            state.retrieval_results[0].page_number
+            if state.retrieval_results
             else 1
         ),
     )
@@ -290,8 +353,6 @@ def audit_node(state: AgentState) -> AgentState:
         "You will be notified when a decision is made."
     )
 
-    state.final_response_status = (
-        FinalResponseStatus.ROUTED_TO_AUDIT
-    )
+    state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
 
     return state
