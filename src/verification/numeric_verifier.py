@@ -1,3 +1,4 @@
+
 import math
 import re
 
@@ -23,11 +24,28 @@ class NumericVerifier:
         r"[-+]?(?:\d+(?:\.\d+)?)\s*%"
     )
 
+    _FINANCIAL_SUFFIX_PATTERN = re.compile(
+        r"(?P<number>"
+        r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+        r")"
+        r"\s*"
+        r"(?P<suffix>"
+        r"bn|mn|b|m|k|"
+        r"billion|million|thousand|trillion"
+        r")\b",
+        re.IGNORECASE,
+    )
+
     _UNIT_MULTIPLIERS = {
         "thousand": 1_000.0,
         "million": 1_000_000.0,
         "billion": 1_000_000_000.0,
         "trillion": 1_000_000_000_000.0,
+        "k": 1_000.0,
+        "mn": 1_000_000.0,
+        "m": 1_000_000.0,
+        "bn": 1_000_000_000.0,
+        "b": 1_000_000_000.0,
     }
 
     def verify(
@@ -42,6 +60,15 @@ class NumericVerifier:
                 claim_id=claim.claim_id,
                 status=VerificationStatus.INCONCLUSIVE,
                 reason=VerificationReason.UNSUPPORTED_CLAIM,
+                confidence=1.0,
+                evidence_chunk_id=claim.source_chunk_id,
+            )
+
+        if not evidence or not evidence.strip():
+            return VerificationResult(
+                claim_id=claim.claim_id,
+                status=VerificationStatus.INCONCLUSIVE,
+                reason=VerificationReason.EVIDENCE_MISSING,
                 confidence=1.0,
                 evidence_chunk_id=claim.source_chunk_id,
             )
@@ -95,14 +122,35 @@ class NumericVerifier:
         )
 
     def _extract_values(self, text: str) -> list[float]:
-        """Extract normalized numeric values from evidence."""
+        """
+        Extract normalized numeric values from evidence.
+
+        Supports:
+            42
+            42.8
+            42.8B
+            42.8 billion
+            42.8M
+            42.8 million
+            42.8K
+            42.8 thousand
+            42.8bn
+            42.8mn
+
+        Percentages are returned as their numeric percentage value.
+        """
 
         values: list[float] = []
 
-        percentage_matches = self._PERCENT_PATTERN.findall(text)
+        # ---------------------------------------------------------
+        # 1. Percentages
+        # ---------------------------------------------------------
+        percentage_matches = self._PERCENT_PATTERN.finditer(text)
 
         for match in percentage_matches:
-            number_match = self._NUMBER_PATTERN.search(match)
+            number_match = self._NUMBER_PATTERN.search(
+                match.group(0)
+            )
 
             if number_match is None:
                 continue
@@ -116,34 +164,68 @@ class NumericVerifier:
             except ValueError:
                 continue
 
+        # ---------------------------------------------------------
+        # 2. Financial values with explicit magnitude suffixes
+        # ---------------------------------------------------------
+        suffix_spans: list[tuple[int, int]] = []
+
+        for match in self._FINANCIAL_SUFFIX_PATTERN.finditer(text):
+            number = match.group("number")
+            suffix = match.group("suffix").lower()
+
+            try:
+                numeric_value = float(
+                    number.replace(",", "")
+                )
+            except ValueError:
+                continue
+
+            multiplier = self._UNIT_MULTIPLIERS.get(
+                suffix,
+                1.0,
+            )
+
+            values.append(
+                numeric_value * multiplier
+            )
+
+            suffix_spans.append(
+                (
+                    match.start(),
+                    match.end(),
+                )
+            )
+
+        # ---------------------------------------------------------
+        # 3. Plain numeric values
+        #
+        # Skip numbers already consumed by the financial-suffix
+        # parser so that 42.8B is not also interpreted as 42.8.
+        # ---------------------------------------------------------
         for match in self._NUMBER_PATTERN.finditer(text):
+            if any(
+                start <= match.start() < end
+                for start, end in suffix_spans
+            ):
+                continue
+
             raw_number = match.group(0)
 
-            end_position = match.end()
-
+            # Skip percentages.
             if (
-                end_position < len(text)
-                and text[end_position] == "%"
+                match.end() < len(text)
+                and text[match.end()] == "%"
             ):
                 continue
 
             try:
-                number = float(raw_number.replace(",", ""))
+                values.append(
+                    float(
+                        raw_number.replace(",", "")
+                    )
+                )
             except ValueError:
                 continue
-
-            remaining_text = text[match.end():].lower()
-
-            multiplier = 1.0
-
-            for unit, unit_multiplier in (
-                self._UNIT_MULTIPLIERS.items()
-            ):
-                if remaining_text.lstrip().startswith(unit):
-                    multiplier = unit_multiplier
-                    break
-
-            values.append(number * multiplier)
 
         return values
 
@@ -154,6 +236,33 @@ class NumericVerifier:
     ) -> float | None:
         """Normalize a claim value and unit."""
 
+        if not value or not value.strip():
+            return None
+
+        # First support values that already contain a suffix,
+        # e.g. "$42.8B".
+        suffix_match = self._FINANCIAL_SUFFIX_PATTERN.search(
+            value
+        )
+
+        if suffix_match:
+            try:
+                number = float(
+                    suffix_match.group("number").replace(",", "")
+                )
+            except ValueError:
+                return None
+
+            suffix = suffix_match.group("suffix").lower()
+
+            multiplier = self._UNIT_MULTIPLIERS.get(
+                suffix,
+                1.0,
+            )
+
+            return number * multiplier
+
+        # Otherwise parse the numeric component.
         match = self._NUMBER_PATTERN.search(value)
 
         if match is None:
@@ -172,7 +281,7 @@ class NumericVerifier:
         multiplier = 1.0
 
         if unit:
-            normalized_unit = unit.lower()
+            normalized_unit = unit.lower().strip()
 
             for name, unit_multiplier in (
                 self._UNIT_MULTIPLIERS.items()
@@ -182,3 +291,4 @@ class NumericVerifier:
                     break
 
         return number * multiplier
+
