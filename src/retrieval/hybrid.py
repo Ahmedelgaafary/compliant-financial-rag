@@ -1,3 +1,7 @@
+"""Hybrid BM25 + vector retrieval using Reciprocal Rank Fusion."""
+
+from __future__ import annotations
+
 from collections import defaultdict
 
 from src.retrieval.models import RetrievalResult
@@ -16,7 +20,9 @@ class HybridRetriever:
         rrf_k: int = 60,
     ) -> None:
         if rrf_k <= 0:
-            raise ValueError("rrf_k must be greater than zero")
+            raise ValueError(
+                "rrf_k must be greater than zero"
+            )
 
         self.bm25_retriever = bm25_retriever
         self.vector_store = vector_store
@@ -29,11 +35,15 @@ class HybridRetriever:
     ) -> tuple[RetrievalResult, ...]:
         """Retrieve and fuse results from BM25 and vector search."""
 
-        if not query.strip():
-            raise ValueError("query cannot be empty")
+        if not query or not query.strip():
+            raise ValueError(
+                "query cannot be empty"
+            )
 
         if top_k <= 0:
-            raise ValueError("top_k must be greater than zero")
+            raise ValueError(
+                "top_k must be greater than zero"
+            )
 
         bm25_results = self.bm25_retriever.retrieve(
             query,
@@ -45,33 +55,66 @@ class HybridRetriever:
             top_k=top_k,
         )
 
-        scores: dict[str, float] = defaultdict(float)
-        results_by_id: dict[str, RetrievalResult] = {}
+        scores: dict[str, float] = defaultdict(
+            float
+        )
 
-        for rank, result in enumerate(bm25_results, start=1):
-            scores[result.chunk_id] += 1 / (self.rrf_k + rank)
-            results_by_id[result.chunk_id] = result
+        results_by_id: dict[
+            str,
+            RetrievalResult,
+        ] = {}
 
-        for rank, result in enumerate(vector_results, start=1):
-            scores[result.chunk_id] += 1 / (self.rrf_k + rank)
+        for rank, result in enumerate(
+            bm25_results,
+            start=1,
+        ):
+            scores[result.chunk_id] += (
+                1.0
+                / (self.rrf_k + rank)
+            )
 
-            if result.chunk_id not in results_by_id:
-                results_by_id[result.chunk_id] = result
+            results_by_id[
+                result.chunk_id
+            ] = result
+
+        for rank, result in enumerate(
+            vector_results,
+            start=1,
+        ):
+            scores[result.chunk_id] += (
+                1.0
+                / (self.rrf_k + rank)
+            )
+
+            results_by_id.setdefault(
+                result.chunk_id,
+                result,
+            )
 
         ranked_chunk_ids = sorted(
             scores,
-            key=scores.get,
-            reverse=True,
+            key=lambda chunk_id: (
+                -scores[chunk_id],
+                chunk_id,
+            ),
         )[:top_k]
 
         results = tuple(
             RetrievalResult(
                 chunk_id=chunk_id,
-                document_id=results_by_id[chunk_id].document_id,
-                text=results_by_id[chunk_id].text,
+                document_id=results_by_id[
+                    chunk_id
+                ].document_id,
+                text=results_by_id[
+                    chunk_id
+                ].text,
                 score=scores[chunk_id],
-                page_number=results_by_id[chunk_id].page_number,
-                section=results_by_id[chunk_id].section,
+                page_number=results_by_id[
+                    chunk_id
+                ].page_number,
+                section=results_by_id[
+                    chunk_id
+                ].section,
                 document_sha256=results_by_id[
                     chunk_id
                 ].document_sha256,
@@ -81,7 +124,8 @@ class HybridRetriever:
         )
 
         logger.info(
-            "Hybrid retrieval completed: query=%r results=%d",
+            "Hybrid retrieval completed: "
+            "query=%r results=%d",
             query,
             len(results),
         )

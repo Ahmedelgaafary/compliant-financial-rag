@@ -10,7 +10,7 @@ from src.guardrails.generation_guard import GenerationGuard
 from src.guardrails.policies import GuardrailPolicies
 from src.guardrails.runner import GuardrailRunner
 from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 @pytest.fixture
@@ -26,9 +26,15 @@ def policies():
 @pytest.fixture
 def verified_results():
     # Create mock verification results
+    #
+    # `.status` must be the actual VerificationStatus enum member, not
+    # the raw string "VERIFIED" - VerificationStatus is a StrEnum whose
+    # value is lowercase ("verified"), and GenerationGuard compares
+    # against the enum member directly, so a bare uppercase string
+    # never matches and the guard silently treats these as unverified.
     results = []
     v1 = Mock(spec=VerificationResult)
-    v1.status = "VERIFIED"
+    v1.status = VerificationStatus.VERIFIED
     v1.claim_type = "NUMERIC"
     v1.normalized_value = 42.8
     v1.unit = "billion"
@@ -37,7 +43,7 @@ def verified_results():
     results.append(v1)
 
     v2 = Mock(spec=VerificationResult)
-    v2.status = "VERIFIED"
+    v2.status = VerificationStatus.VERIFIED
     v2.claim_type = "TEXT"
     v2.evidence_chunk_id = "chunk2"
     v2.page_number = 10

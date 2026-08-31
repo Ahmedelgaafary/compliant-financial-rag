@@ -25,11 +25,17 @@ class VerificationPipeline:
         evidence_text: str,
         provenance: EvidenceProvenance,
     ) -> VerificationPipelineResult:
-        """Verify a claim against supplied evidence."""
+        """Verify a claim against supplied evidence and provenance.
+
+        Provenance is passed into the verifier itself so that a claim
+        cannot become VERIFIED independently of the evidence citation
+        that supports it.
+        """
 
         verification = self._claim_verifier.verify(
             claim=claim,
             evidence_text=evidence_text,
+            provenance=provenance,
         )
 
         return VerificationPipelineResult(

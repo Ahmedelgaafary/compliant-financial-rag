@@ -27,6 +27,7 @@ class PeriodVerifier:
                 reason=VerificationReason.UNSUPPORTED_CLAIM,
                 confidence=1.0,
                 evidence_chunk_id=claim.source_chunk_id,
+                claim_type=claim.claim_type,
             )
 
         evidence_years = self._extract_years(evidence)
@@ -38,6 +39,7 @@ class PeriodVerifier:
                 reason=VerificationReason.EVIDENCE_MISSING,
                 confidence=1.0,
                 evidence_chunk_id=claim.source_chunk_id,
+                claim_type=claim.claim_type,
             )
 
         claim_years = self._extract_years(claim.period)
@@ -49,6 +51,7 @@ class PeriodVerifier:
                 reason=VerificationReason.UNSUPPORTED_CLAIM,
                 confidence=1.0,
                 evidence_chunk_id=claim.source_chunk_id,
+                claim_type=claim.claim_type,
             )
 
         if claim_years.intersection(evidence_years):
@@ -58,6 +61,7 @@ class PeriodVerifier:
                 reason=VerificationReason.PERIOD_MATCH,
                 confidence=1.0,
                 evidence_chunk_id=claim.source_chunk_id,
+                claim_type=claim.claim_type,
             )
 
         return VerificationResult(
@@ -66,9 +70,12 @@ class PeriodVerifier:
             reason=VerificationReason.PERIOD_MISMATCH,
             confidence=1.0,
             evidence_chunk_id=claim.source_chunk_id,
+            claim_type=claim.claim_type,
         )
 
     def _extract_years(self, text: str) -> set[str]:
         """Extract four-digit years from text."""
 
-        return set(self._YEAR_PATTERN.findall(text))
+        return set(
+            self._YEAR_PATTERN.findall(text)
+        )

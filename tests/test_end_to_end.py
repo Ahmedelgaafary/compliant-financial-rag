@@ -11,7 +11,7 @@ from src.audit.review_service import ReviewService
 from src.guardrails.policies import GuardrailPolicies
 from src.guardrails.runner import GuardrailRunner
 from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 @pytest.fixture
@@ -59,7 +59,16 @@ def create_verification_result(
     page_number: int = 42,
 ):
     v = Mock(spec=VerificationResult)
-    v.status = status
+    # `status` is passed as the VerificationStatus member *name*
+    # (e.g. "VERIFIED", "INCONCLUSIVE", "REJECTED"). Storing the raw
+    # string here instead of the actual enum member meant every
+    # `result.status == VerificationStatus.VERIFIED` check elsewhere in
+    # the pipeline (confidence scoring, risk assessment, the guardrail
+    # runner's all_verified check) silently failed, since the enum's
+    # value is lowercase ('verified') and never equals the literal
+    # string "VERIFIED". Look the real enum member up by name so this
+    # mock behaves like production data.
+    v.status = VerificationStatus[status]
     v.reason = reason
     v.claim_type = claim_type
     v.normalized_value = normalized_value

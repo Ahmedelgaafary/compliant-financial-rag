@@ -11,7 +11,7 @@ from enum import Enum
 from typing import List, Optional
 
 from src.guardrails.risk_engine import RiskAssessment
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 class RoutingAction(str, Enum):
@@ -88,8 +88,14 @@ class AuditRouter:
         # ---------------------------------------------------------
         # 2. Verification outcomes
         # ---------------------------------------------------------
+        # VerificationStatus is a StrEnum with lowercase values
+        # ("verified", "rejected", "inconclusive"). Comparing against
+        # hardcoded uppercase string literals here never matched the
+        # enum, so INCONCLUSIVE/REJECTED claims silently fell through
+        # to the risk-level-only checks below. Compare against the
+        # actual enum members instead.
         for verification in verification_results:
-            if verification.status == "INCONCLUSIVE":
+            if verification.status == VerificationStatus.INCONCLUSIVE:
                 return RoutingDecision(
                     action=RoutingAction.HUMAN_REVIEW,
                     reason=(
@@ -100,7 +106,7 @@ class AuditRouter:
                     audit_priority="MEDIUM",
                 )
 
-            if verification.status == "REJECTED":
+            if verification.status == VerificationStatus.REJECTED:
                 return RoutingDecision(
                     action=RoutingAction.HUMAN_REVIEW,
                     reason=(

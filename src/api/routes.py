@@ -1,12 +1,16 @@
 # src/api/routes.py
 
+from typing import List
+
 from fastapi import APIRouter, HTTPException, status
 
+from src.agent.node import _detect_company_from_text, _find_pdf_documents
 from src.agent.workflow import run_agent
 from src.api.schemas import (
     AuditDecisionRequest,
     AuditDecisionResponse,
     AuditResponse,
+    DocumentResponse,
     EvidenceResponse,
     QueryRequest,
     QueryResponse,
@@ -62,6 +66,8 @@ def _serialize_evidence(state) -> list[EvidenceResponse]:
                     "retrieval_method",
                     None,
                 ),
+                document_name=getattr(result, "document_name", None),
+                document_path=getattr(result, "document_path", None),
             )
         )
 
@@ -148,6 +154,10 @@ def _audit_to_response(record: AuditRecord) -> AuditResponse:
     )
 
 
+# ============================================================================
+# System endpoints
+# ============================================================================
+
 @router.get(
     "/health",
     tags=["system"],
@@ -160,6 +170,141 @@ def health_check() -> dict[str, str]:
     }
 
 
+# ============================================================================
+# Document endpoints
+# ============================================================================
+
+@router.get(
+    "/documents",
+    response_model=list[DocumentResponse],
+    tags=["documents"],
+)
+def list_documents() -> List[DocumentResponse]:
+    """
+    List all available financial documents.
+    
+    Returns a list of all PDF documents found in the data directories.
+    """
+    pdf_files = _find_pdf_documents()
+    
+    documents = []
+    for pdf in pdf_files:
+        # Detect company from filename
+        company = _detect_company_from_text(pdf.name)
+        
+        documents.append(
+            DocumentResponse(
+                name=pdf.name,
+                path=str(pdf),
+                size=pdf.stat().st_size,
+                modified=pdf.stat().st_mtime,
+                directory=str(pdf.parent),
+                company=company,
+            )
+        )
+    
+    return sorted(documents, key=lambda x: x.name)
+
+
+@router.get(
+    "/documents/{document_name}",
+    response_model=DocumentResponse,
+    tags=["documents"],
+)
+def get_document(document_name: str) -> DocumentResponse:
+    """
+    Get metadata for a specific document.
+    """
+    pdf_files = _find_pdf_documents()
+    
+    for pdf in pdf_files:
+        if pdf.name == document_name:
+            company = _detect_company_from_text(pdf.name)
+            return DocumentResponse(
+                name=pdf.name,
+                path=str(pdf),
+                size=pdf.stat().st_size,
+                modified=pdf.stat().st_mtime,
+                directory=str(pdf.parent),
+                company=company,
+            )
+    
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Document '{document_name}' not found.",
+    )
+
+
+# ============================================================================
+# Company endpoints
+# ============================================================================
+
+@router.get(
+    "/companies",
+    tags=["companies"],
+)
+def list_companies() -> dict:
+    """
+    List all detected companies and their documents.
+    """
+    pdf_files = _find_pdf_documents()
+    
+    companies = {}
+    for pdf in pdf_files:
+        company = _detect_company_from_text(pdf.name)
+        if company:
+            if company not in companies:
+                companies[company] = []
+            companies[company].append({
+                "name": pdf.name,
+                "path": str(pdf),
+                "size": pdf.stat().st_size,
+            })
+    
+    return {
+        "companies": list(companies.keys()),
+        "details": companies,
+    }
+
+
+@router.get(
+    "/companies/{company_name}/documents",
+    tags=["companies"],
+)
+def get_company_documents(company_name: str) -> List[DocumentResponse]:
+    """
+    Get all documents for a specific company.
+    """
+    pdf_files = _find_pdf_documents()
+    
+    company_docs = []
+    for pdf in pdf_files:
+        detected = _detect_company_from_text(pdf.name)
+        if detected and detected.lower() == company_name.lower():
+            company_docs.append(
+                DocumentResponse(
+                    name=pdf.name,
+                    path=str(pdf),
+                    size=pdf.stat().st_size,
+                    modified=pdf.stat().st_mtime,
+                    directory=str(pdf.parent),
+                    company=detected,
+                )
+            )
+    
+    if not company_docs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No documents found for company '{company_name}'.",
+        )
+    
+    return sorted(company_docs, key=lambda x: x.name)
+
+
+# ============================================================================
+# Agent endpoints
+# ============================================================================
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -171,8 +316,14 @@ def query(request: QueryRequest) -> QueryResponse:
     Submit a financial question to the compliant RAG agent.
 
     The complete workflow is executed through the existing agent graph.
+    
+    Supports:
+    - Single metric queries: "What was Apple's revenue in 2025?"
+    - Multi-metric queries: "What was revenue, net income, and gross profit?"
+    - Narrative queries: "Why did Apple's revenue change in 2025?"
+    - Company-specific queries: "What was Microsoft's net income?"
+    - Multi-company queries: "Compare Apple and Microsoft revenue"
     """
-
     try:
         state = run_agent(request.user_query)
     except Exception as exc:
@@ -186,6 +337,14 @@ def query(request: QueryRequest) -> QueryResponse:
         "final_answer",
         "",
     )
+
+    # If final_answer is empty, use raw_llm_output
+    if not final_answer:
+        final_answer = _get_state_value(
+            state,
+            "raw_llm_output",
+            "",
+        )
 
     final_status = _get_state_value(
         state,
@@ -216,6 +375,13 @@ def query(request: QueryRequest) -> QueryResponse:
             None,
         )
 
+    # Get claims count
+    claims = _get_state_value(
+        state,
+        "claims",
+        [],
+    )
+
     return QueryResponse(
         final_answer=final_answer,
         status=(
@@ -230,8 +396,14 @@ def query(request: QueryRequest) -> QueryResponse:
         evidence=_serialize_evidence(state),
         verification_results=_serialize_verification_results(state),
         risk_assessment=_serialize_risk(state),
+        claims_count=len(claims),
+        query_analysis=_get_state_value(state, "query_analysis", None),
     )
 
+
+# ============================================================================
+# Audit endpoints
+# ============================================================================
 
 @router.get(
     "/audits",

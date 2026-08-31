@@ -1,158 +1,127 @@
 # src/api/schemas.py
 
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from src.audit.models import AuditStatus, ReviewDecision
+from pydantic import BaseModel, Field
 
 
 class QueryRequest(BaseModel):
-    """Request payload for submitting a financial query."""
+    """Request model for the /query endpoint."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    user_query: str = Field(
-        ...,
-        min_length=1,
-        description="Financial question submitted by the user.",
-    )
+    user_query: str = Field(..., description="Financial question to ask the agent.")
 
 
 class EvidenceResponse(BaseModel):
-    """Evidence returned with a verified or reviewed response."""
-
-    model_config = ConfigDict(extra="allow")
+    """A single piece of retrieved evidence."""
 
     chunk_id: str
     document_id: str
     text: str
-    score: float | None = None
-    page_number: int | None = None
-    section: str | None = None
-    document_sha256: str | None = None
-    retrieval_method: str | None = None
+    score: Optional[float] = None
+    page_number: Optional[int] = None
+    section: Optional[str] = None
+    document_sha256: Optional[str] = None
+    retrieval_method: Optional[str] = None
+    document_name: Optional[str] = None
+    document_path: Optional[str] = None
 
 
 class VerificationResponse(BaseModel):
-    """Deterministic verification result exposed by the API."""
-
-    model_config = ConfigDict(extra="allow")
+    """A single verification result."""
 
     claim_id: str
     status: str
     reason: str
-    confidence: float | None = None
-    evidence_chunk_id: str | None = None
+    confidence: Optional[float] = None
+    evidence_chunk_id: Optional[str] = None
 
 
 class RiskResponse(BaseModel):
-    """Risk assessment exposed by the API."""
-
-    model_config = ConfigDict(extra="allow")
+    """Risk assessment response."""
 
     risk_score: float
     risk_level: str
-    triggers: list[str] = Field(default_factory=list)
+    triggers: List[str]
     recommended_action: str
 
 
 class QueryResponse(BaseModel):
-    """Final response returned to a user query."""
-
-    model_config = ConfigDict(extra="allow")
+    """Response model for the /query endpoint."""
 
     final_answer: str
     status: str
-    should_route_to_audit: bool = False
-    audit_id: str | None = None
+    should_route_to_audit: bool
+    audit_id: Optional[str] = None
+    evidence: List[EvidenceResponse] = []
+    verification_results: List[VerificationResponse] = []
+    risk_assessment: Optional[RiskResponse] = None
+    claims_count: Optional[int] = None
+    query_analysis: Optional[Dict[str, Any]] = None
 
-    evidence: list[EvidenceResponse] = Field(
-        default_factory=list,
-    )
 
-    verification_results: list[VerificationResponse] = Field(
-        default_factory=list,
-    )
+class AuditDecisionRequest(BaseModel):
+    """Request model for submitting an audit decision."""
 
-    risk_assessment: RiskResponse | None = None
+    decision: str = Field(..., description="APPROVE or REJECT")
+    notes: Optional[str] = Field(None, description="Review notes")
+    reviewer: str = Field(..., description="Reviewer name or ID")
+
+
+class AuditDecisionResponse(BaseModel):
+    """Response model for an audit decision."""
+
+    audit_id: str
+    status: str
+    review_decision: Optional[str]
+    reviewer: Optional[str]
+    review_notes: Optional[str]
+    review_timestamp: Optional[datetime]
 
 
 class AuditResponse(BaseModel):
-    """Audit case exposed through the API."""
-
-    model_config = ConfigDict(from_attributes=True)
+    """Full audit record response."""
 
     audit_id: str
     timestamp: datetime
     user_query: str
-
     claim: str
     verification_status: str
     verification_reason: str
-
     risk_level: str
-
-    evidence: list[dict] = Field(
-        default_factory=list,
-    )
-
-    provenance: list[dict] = Field(
-        default_factory=list,
-    )
-
-    claim_id: str = ""
-    document_id: str = ""
-    document_sha256: str = ""
-    page_number: int = 0
-
-    risk_assessment: str = ""
-
+    evidence: List[Dict[str, Any]]
+    provenance: Dict[str, Any]
+    claim_id: Optional[str]
+    document_id: Optional[str]
+    document_sha256: Optional[str]
+    page_number: Optional[int]
+    risk_assessment: Optional[Dict[str, Any]]
     created_at: datetime
-
-    reviewer: str | None = None
-    review_decision: ReviewDecision | None = None
-    review_notes: str | None = None
-    review_timestamp: datetime | None = None
-
-    status: AuditStatus = AuditStatus.PENDING
-
-    confidence_score: float | None = None
-    risk_score: float | None = None
-
-    triggers: list[str] = Field(
-        default_factory=list,
-    )
-
-    verification_results: list[dict] = Field(
-        default_factory=list,
-    )
+    reviewer: Optional[str]
+    review_decision: Optional[str]
+    review_notes: Optional[str]
+    review_timestamp: Optional[datetime]
+    status: str
+    confidence_score: Optional[float]
+    risk_score: Optional[float]
+    triggers: Optional[List[str]]
+    verification_results: Optional[List[Dict[str, Any]]]
 
 
-class AuditDecisionRequest(BaseModel):
-    """Request payload for submitting a human audit decision."""
+class DocumentResponse(BaseModel):
+    """Response model for document endpoints."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    reviewer: str = Field(
-        ...,
-        min_length=1,
-        description="Identifier of the human reviewer.",
-    )
-
-    decision: ReviewDecision
-
-    notes: str | None = None
+    name: str
+    path: str
+    size: int
+    modified: float
+    directory: str
+    company: Optional[str] = None
 
 
-class AuditDecisionResponse(BaseModel):
-    """Result returned after applying a human audit decision."""
+class CompanyInfoResponse(BaseModel):
+    """Response model for company info endpoint."""
 
-    model_config = ConfigDict(extra="allow")
-
-    audit_id: str
-    status: AuditStatus
-    review_decision: ReviewDecision
-    reviewer: str
-    review_notes: str | None = None
-    review_timestamp: datetime | None = None
+    name: str
+    variations: List[str]
+    documents: List[DocumentResponse]
