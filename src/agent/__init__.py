@@ -1,4 +1,26 @@
-from .graph import build_agent_graph
-from .workflow import run_agent
+"""Agent package."""
 
-__all__ = ["run_agent", "build_agent_graph"]
+from src.agent.graph import build_agent_graph
+from src.agent.state import (
+    AgentClaim,
+    AgentState,
+    AuditStatus,
+    FinalResponseStatus,
+    HumanDecision,
+    QuestionSpec,
+)
+
+# ``run_agent`` historically lived in workflow.py and is intentionally
+# imported here for backward compatibility with API callers.
+from src.agent.workflow import run_agent
+
+__all__ = [
+    "AgentClaim",
+    "AgentState",
+    "AuditStatus",
+    "FinalResponseStatus",
+    "HumanDecision",
+    "QuestionSpec",
+    "build_agent_graph",
+    "run_agent",
+]

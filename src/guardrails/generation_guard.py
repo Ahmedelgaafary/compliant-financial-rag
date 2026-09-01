@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Set, Tuple
 
 from src.guardrails.policies import GuardrailPolicies
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 @dataclass
@@ -27,9 +27,19 @@ class GenerationGuard:
 
     def __init__(self, policies: GuardrailPolicies):
         self.policies = policies
-        # Patterns to detect potential financial numbers in text
+        # Patterns to detect potential financial numbers in text.
+        #
+        # The integer portion is matched as EITHER a comma-grouped number
+        # (e.g. "1,234,567") OR a plain digit run of any length (e.g.
+        # "2025", "42", "1000"). The previous pattern capped the
+        # non-comma-grouped case at 3 digits (\d{1,3}), which meant any
+        # 4+ digit number without thousands separators (a year, a page
+        # count, "1000") was split into multiple bogus matches - e.g.
+        # "2025" matched as "202" and then "5" separately.
         self.numeric_pattern = re.compile(
-            r'\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(billion|million|B|M|bn|mn|%)?',
+            r'(?P<dollar>\$)?\s*'
+            r'(?P<value>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)'
+            r'\s*(?P<unit>billion|million|B|M|bn|mn|%)?',
             re.IGNORECASE
         )
         # Updated to catch "Page 99", "(Page 99)", and "[citation:99]"
@@ -45,7 +55,7 @@ class GenerationGuard:
         """Extract normalized numeric values and units from verified claims."""
         verified = set()
         for v in verification_results:
-            if v.status == "VERIFIED" and v.claim_type == "NUMERIC":
+            if v.status == VerificationStatus.VERIFIED and v.claim_type == "NUMERIC":
                 if hasattr(v, 'normalized_value') and hasattr(v, 'unit'):
                     verified.add((v.normalized_value, v.unit))
         return verified
@@ -57,7 +67,7 @@ class GenerationGuard:
         """Extract page numbers from verified evidence chunks."""
         pages = set()
         for v in verification_results:
-            if v.status == "VERIFIED" and hasattr(v, 'evidence_chunk_id'):
+            if v.status == VerificationStatus.VERIFIED and hasattr(v, 'evidence_chunk_id'):
                 # In real implementation, fetch chunk metadata
                 if hasattr(v, 'page_number') and v.page_number:
                     pages.add(v.page_number)
@@ -81,10 +91,19 @@ class GenerationGuard:
         numeric_matches = self.numeric_pattern.finditer(raw_output)
 
         for match in numeric_matches:
-            number_str = match.group(1).replace(',', '')
-            unit = match.group(2) or ""
+            dollar = match.group('dollar')
+            unit = match.group('unit') or ""
+            number_str = match.group('value').replace(',', '')
 
             if not number_str:
+                continue
+
+            # Skip bare numbers with no financial context. A number is
+            # only treated as a financial claim if it's introduced by a
+            # currency symbol or followed by a magnitude/percent unit -
+            # otherwise it's incidental (a year, a page reference, an
+            # ordinary count) and shouldn't be flagged as unverified.
+            if not dollar and not unit:
                 continue
 
             try:

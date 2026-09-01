@@ -1,9 +1,14 @@
-# src/guardrails/risk_engine.py
+"""Deterministic risk assessment engine."""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List
 
 from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult, VerificationStatus
+from src.verification.models import (
+    VerificationResult,
+    VerificationStatus,
+)
 
 from .confidence import ConfidenceScore
 from .policies import GuardrailPolicies
@@ -12,117 +17,166 @@ from .policies import GuardrailPolicies
 @dataclass
 class RiskAssessment:
     """Deterministic risk decision."""
+
     risk_score: float
     risk_level: str
-    triggers: List[str]
+    triggers: list[str]
     recommended_action: str
 
 
 class RiskEngine:
-    """
-    Converts verification results + confidence into a deterministic risk decision.
-    It does NOT perform verification itself.
-    """
+    """Convert verification and confidence signals into risk."""
 
-    def __init__(self, policies: GuardrailPolicies):
+    def __init__(
+        self,
+        policies: GuardrailPolicies,
+    ) -> None:
         self.policies = policies
 
     def assess(
         self,
-        retrieval_results: List[RetrievalResult],
-        verification_results: List[VerificationResult],
+        retrieval_results: list[RetrievalResult],
+        verification_results: list[VerificationResult],
         confidence: ConfidenceScore,
     ) -> RiskAssessment:
-        risk_score = 0.0
-        triggers = []
+        """Calculate a deterministic risk score."""
 
-        # 1. Verification failures
+        risk_score = 0.0
+        triggers: list[str] = []
+
         rejected = [
-            v for v in verification_results
-            if v.status == VerificationStatus.REJECTED
+            result
+            for result in verification_results
+            if result.status
+            == VerificationStatus.REJECTED
         ]
+
         if rejected:
             risk_score += (
-                self.policies.risk_increment_rejected * len(rejected)
+                self.policies.risk_increment_rejected
+                * len(rejected)
             )
+
             triggers.extend(
-                [f"REJECTED_{v.reason}" for v in rejected]
+                f"REJECTED_{result.reason}"
+                for result in rejected
             )
 
         inconclusive = [
-            v for v in verification_results
-            if v.status == VerificationStatus.INCONCLUSIVE
+            result
+            for result in verification_results
+            if result.status
+            == VerificationStatus.INCONCLUSIVE
         ]
+
         if inconclusive:
             risk_score += (
-                self.policies.risk_increment_inconclusive * len(inconclusive)
-            )
-            triggers.extend(
-                [f"INCONCLUSIVE_{v.reason}" for v in inconclusive]
+                self.policies.risk_increment_inconclusive
+                * len(inconclusive)
             )
 
-        # 2. Contradictions (case-insensitive)
+            triggers.extend(
+                f"INCONCLUSIVE_{result.reason}"
+                for result in inconclusive
+            )
+
         contradictions = [
-            v for v in verification_results
-            if v.reason.lower() == "evidence_contradicts"
+            result
+            for result in verification_results
+            if result.reason.casefold()
+            == "evidence_contradicts"
         ]
+
         if contradictions:
             risk_score += (
                 self.policies.risk_increment_contradiction
                 * len(contradictions)
             )
-            triggers.append("EVIDENCE_CONTRADICTS")
+            triggers.append(
+                "EVIDENCE_CONTRADICTS"
+            )
 
-        # 3. Low confidence
-        if confidence.overall < self.policies.min_overall_confidence:
-            risk_score += self.policies.risk_increment_low_confidence
-            triggers.append("LOW_CONFIDENCE")
+        if (
+            confidence.overall
+            < self.policies.min_overall_confidence
+        ):
+            risk_score += (
+                self.policies.risk_increment_low_confidence
+            )
+            triggers.append(
+                "LOW_CONFIDENCE"
+            )
 
-        # 4. Missing provenance (chunk_id)
         missing_provenance = [
-            v for v in verification_results
-            if v.evidence_chunk_id is None
+            result
+            for result in verification_results
+            if result.evidence_chunk_id is None
         ]
+
         if missing_provenance:
             risk_score += (
                 self.policies.risk_increment_missing_provenance
                 * len(missing_provenance)
             )
-            triggers.append("MISSING_PROVENANCE")
+            triggers.append(
+                "MISSING_PROVENANCE"
+            )
 
-        # 5. Insufficient evidence
         if not retrieval_results:
-            risk_score += self.policies.risk_increment_no_evidence
-            triggers.append("NO_EVIDENCE")
-        elif len(retrieval_results) < self.policies.min_evidence_chunks:
+            risk_score += (
+                self.policies.risk_increment_no_evidence
+            )
+            triggers.append(
+                "NO_EVIDENCE"
+            )
+
+        elif len(retrieval_results) < (
+            self.policies.min_evidence_chunks
+        ):
             risk_score += (
                 self.policies.risk_increment_insufficient_evidence
             )
-            triggers.append("INSUFFICIENT_EVIDENCE")
+            triggers.append(
+                "INSUFFICIENT_EVIDENCE"
+            )
 
-        # 6. Numeric mismatch (critical) - case-insensitive
         numeric_mismatch = any(
-            v.reason.lower() == "numeric_mismatch" for v in rejected
+            result.reason.casefold()
+            == "numeric_mismatch"
+            for result in rejected
         )
+
         if numeric_mismatch:
-            # Ensure at least one rejected + numeric mismatch pushes to HIGH
-            # by adding a large increment if needed
-            risk_score += self.policies.risk_increment_numeric_mismatch
-            triggers.append("NUMERIC_MISMATCH")
+            risk_score += (
+                self.policies.risk_increment_numeric_mismatch
+            )
+            triggers.append(
+                "NUMERIC_MISMATCH"
+            )
 
-        # Cap risk score
-        risk_score = min(1.0, risk_score)
+        risk_score = min(
+            1.0,
+            risk_score,
+        )
 
-        # Determine risk level
-        risk_level = self.policies.get_risk_level(risk_score)
+        risk_level = self.policies.get_risk_level(
+            risk_score
+        )
 
-        # If numeric mismatch and block is enabled → always BLOCK
-        if self.policies.block_on_numeric_mismatch and numeric_mismatch:
+        if (
+            self.policies.block_on_numeric_mismatch
+            and numeric_mismatch
+        ):
             recommended_action = "BLOCK"
+
         elif risk_level == "HIGH":
             recommended_action = "HUMAN_REVIEW"
+
         elif risk_level == "MEDIUM":
-            recommended_action = "AUTO_ANSWER_WITH_DISCLAIMER"
+            recommended_action = (
+                "AUTO_ANSWER_WITH_DISCLAIMER"
+            )
+
         else:
             recommended_action = "AUTO_ANSWER"
 

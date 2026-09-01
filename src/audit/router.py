@@ -1,13 +1,17 @@
 """
-Routes the query based on risk assessment and verification outcomes.
+Routes queries based on risk assessment and verification outcomes.
+
+The router is deliberately fail-closed:
+if the risk assessment is unavailable, the case is sent to
+human review rather than attempting to auto-answer.
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 from src.guardrails.risk_engine import RiskAssessment
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 class RoutingAction(str, Enum):
@@ -18,6 +22,8 @@ class RoutingAction(str, Enum):
 
 @dataclass
 class RoutingDecision:
+    """Deterministic routing decision for an audit case."""
+
     action: RoutingAction
     reason: str
     should_create_audit_record: bool
@@ -26,7 +32,14 @@ class RoutingDecision:
 
 class AuditRouter:
     """
-    Determines whether to auto-answer, send to human review, or block.
+    Determines whether a case should be:
+
+    - automatically answered,
+    - sent to human review, or
+    - blocked.
+
+    The router is fail-closed. Missing risk information is never treated
+    as LOW risk because that could incorrectly permit an unsafe answer.
     """
 
     def __init__(self):
@@ -34,15 +47,34 @@ class AuditRouter:
 
     def route(
         self,
-        risk_assessment: RiskAssessment,
+        risk_assessment: Optional[RiskAssessment],
         verification_results: List[VerificationResult],
     ) -> RoutingDecision:
         """
-        Makes a routing decision based on the risk assessment and verification outcomes.
+        Make a deterministic routing decision.
+
+        If the risk assessment is unavailable, conservatively route the
+        case to human review with HIGH priority.
         """
 
-        # 1. If risk is HIGH or CRITICAL -> Human Review
-        if risk_assessment.risk_level in ["HIGH", "CRITICAL"]:
+        # ---------------------------------------------------------
+        # 0. Fail closed when risk assessment is unavailable
+        # ---------------------------------------------------------
+        if risk_assessment is None:
+            return RoutingDecision(
+                action=RoutingAction.HUMAN_REVIEW,
+                reason=(
+                    "Risk assessment unavailable. "
+                    "Case conservatively routed to human review."
+                ),
+                should_create_audit_record=True,
+                audit_priority="HIGH",
+            )
+
+        # ---------------------------------------------------------
+        # 1. HIGH / CRITICAL risk -> Human Review
+        # ---------------------------------------------------------
+        if risk_assessment.risk_level in {"HIGH", "CRITICAL"}:
             return RoutingDecision(
                 action=RoutingAction.HUMAN_REVIEW,
                 reason=(
@@ -53,41 +85,56 @@ class AuditRouter:
                 audit_priority="HIGH",
             )
 
-        # 2. Check verification statuses – any INCONCLUSIVE 
-        #or REJECTED requires human review
-        for v in verification_results:
-            if v.status == "INCONCLUSIVE":
+        # ---------------------------------------------------------
+        # 2. Verification outcomes
+        # ---------------------------------------------------------
+        # VerificationStatus is a StrEnum with lowercase values
+        # ("verified", "rejected", "inconclusive"). Comparing against
+        # hardcoded uppercase string literals here never matched the
+        # enum, so INCONCLUSIVE/REJECTED claims silently fell through
+        # to the risk-level-only checks below. Compare against the
+        # actual enum members instead.
+        for verification in verification_results:
+            if verification.status == VerificationStatus.INCONCLUSIVE:
                 return RoutingDecision(
                     action=RoutingAction.HUMAN_REVIEW,
                     reason=(
-                        f"Verification inconclusive. Reason: {v.reason}"
+                        "Verification inconclusive. "
+                        f"Reason: {verification.reason}"
                     ),
                     should_create_audit_record=True,
                     audit_priority="MEDIUM",
                 )
-            if v.status == "REJECTED":
-                # REJECTED already triggers numeric mismatch via risk triggers,
-                # but handle explicitly
+
+            if verification.status == VerificationStatus.REJECTED:
                 return RoutingDecision(
                     action=RoutingAction.HUMAN_REVIEW,
                     reason=(
-                        f"Verification rejected. Reason: {v.reason}"
+                        "Verification rejected. "
+                        f"Reason: {verification.reason}"
                     ),
                     should_create_audit_record=True,
                     audit_priority="HIGH",
                 )
 
-        # 3. If any NUMERIC_MISMATCH trigger exists -> Human Review
+        # ---------------------------------------------------------
+        # 3. Numeric mismatch -> Human Review
+        # ---------------------------------------------------------
         for trigger in risk_assessment.triggers:
             if "NUMERIC_MISMATCH" in trigger:
                 return RoutingDecision(
                     action=RoutingAction.HUMAN_REVIEW,
-                    reason="Numeric mismatch detected. Requires human verification.",
+                    reason=(
+                        "Numeric mismatch detected. "
+                        "Requires human verification."
+                    ),
                     should_create_audit_record=True,
                     audit_priority="HIGH",
                 )
 
-        # 4. If MEDIUM risk -> Auto-answer with disclaimer, but still audit
+        # ---------------------------------------------------------
+        # 4. MEDIUM risk -> Auto-answer with disclaimer
+        # ---------------------------------------------------------
         if risk_assessment.risk_level == "MEDIUM":
             return RoutingDecision(
                 action=RoutingAction.AUTO_ANSWER,
@@ -99,7 +146,9 @@ class AuditRouter:
                 audit_priority="MEDIUM",
             )
 
+        # ---------------------------------------------------------
         # 5. LOW risk -> Auto-answer
+        # ---------------------------------------------------------
         return RoutingDecision(
             action=RoutingAction.AUTO_ANSWER,
             reason="Low risk. Auto-answering.",

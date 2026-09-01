@@ -45,8 +45,9 @@ faiss-cpu
 langchain
 langchain-core
 langgraph
-
-
+openai
+anthropic
+requests
 # ==========================================
 # API
 # ==========================================

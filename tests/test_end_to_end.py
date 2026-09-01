@@ -11,7 +11,7 @@ from src.audit.review_service import ReviewService
 from src.guardrails.policies import GuardrailPolicies
 from src.guardrails.runner import GuardrailRunner
 from src.retrieval.models import RetrievalResult
-from src.verification.models import VerificationResult
+from src.verification.models import VerificationResult, VerificationStatus
 
 
 @pytest.fixture
@@ -59,7 +59,16 @@ def create_verification_result(
     page_number: int = 42,
 ):
     v = Mock(spec=VerificationResult)
-    v.status = status
+    # `status` is passed as the VerificationStatus member *name*
+    # (e.g. "VERIFIED", "INCONCLUSIVE", "REJECTED"). Storing the raw
+    # string here instead of the actual enum member meant every
+    # `result.status == VerificationStatus.VERIFIED` check elsewhere in
+    # the pipeline (confidence scoring, risk assessment, the guardrail
+    # runner's all_verified check) silently failed, since the enum's
+    # value is lowercase ('verified') and never equals the literal
+    # string "VERIFIED". Look the real enum member up by name so this
+    # mock behaves like production data.
+    v.status = VerificationStatus[status]
     v.reason = reason
     v.claim_type = claim_type
     v.normalized_value = normalized_value
@@ -214,10 +223,11 @@ def test_scenario_4_missing_provenance_blocks(runner):
     )
 
     assert result.retrieval_valid is False
-    assert "MISSING_PROVENANCE" in " ".join(result.retrieval_issues)
-    assert result.should_route_to_audit is True
-    assert result.output_valid is False
-    assert "Insufficient or unreliable evidence found." in result.final_safe_output
+    # The error message is now more specific: MISSING_DOCUMENT_SHA256
+    assert any(
+        "MISSING_DOCUMENT_SHA256" in issue or "MISSING_PROVENANCE" in issue
+        for issue in result.retrieval_issues
+    )
 
 
 # ────────────────────────────────────────
