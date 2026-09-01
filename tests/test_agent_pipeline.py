@@ -602,14 +602,9 @@ def test_audit_node_calls_review_service(
 def test_graph_low_risk_returns_verified_answer() -> None:
     """
     Low-risk verified financial information should reach the user.
-
-    Numeric claim extraction is deterministic. Only final natural-language
-    answer generation is supplied by the mocked LLM.
     """
     mock_llm = type("MockLLM", (), {})()
-    mock_llm.generate = lambda prompt: (
-        "The revenue was $42.8B in 2025."
-    )
+    mock_llm.generate = lambda prompt: "The revenue was $42.8B in 2025."
 
     risk_low = build_risk_assessment(
         score=0.1,
@@ -631,7 +626,25 @@ def test_graph_low_risk_returns_verified_answer() -> None:
         "src.agent.node.ReviewService"
     ) as mock_review, patch(
         "src.agent.node.FinalSafetyValidator"
-    ) as mock_validator_cls:
+    ) as mock_validator_cls, patch(
+        "src.agent.node._load_document_chunks"
+    ) as mock_load_chunks:
+
+        # ------------------------------------------------------------------
+        # Mock document chunks to prevent real data loading
+        # ------------------------------------------------------------------
+        from src.ingestion.chunker import DocumentChunk
+        mock_load_chunks.return_value = [
+            DocumentChunk(
+                chunk_id="test_chunk",
+                document_id="test_doc",
+                text="Revenue was $42.8 billion in 2025.",
+                page_number=1,
+                section="Financials",
+                document_sha256="a" * 64,
+            )
+        ]
+
         # ------------------------------------------------------------------
         # Retrieval
         # ------------------------------------------------------------------
@@ -639,6 +652,51 @@ def test_graph_low_risk_returns_verified_answer() -> None:
             build_retrieval_result()
         ]
 
+        # ------------------------------------------------------------------
+        # Verification
+        # ------------------------------------------------------------------
+        mock_verifier.return_value.verify.side_effect = (
+            build_verify_side_effect()
+        )
+
+        # ------------------------------------------------------------------
+        # Guardrails
+        # ------------------------------------------------------------------
+        mock_guardrail.return_value.run_full_pipeline.return_value = (
+            build_guardrail_result(
+                risk_assessment=risk_low,
+                should_route_to_audit=False,
+            )
+        )
+
+        # ------------------------------------------------------------------
+        # Output safety validation
+        # ------------------------------------------------------------------
+        mock_validator = mock_validator_cls.return_value
+        validation_result = type(
+            "ValidationResult",
+            (),
+            {
+                "allowed": True,
+                "reasons": [],
+            },
+        )()
+        mock_validator.validate.return_value = validation_result
+
+        # ------------------------------------------------------------------
+        # Execute graph
+        # ------------------------------------------------------------------
+        graph = build_agent_graph()
+        result = graph.invoke(
+            {"user_query": "What was revenue in 2025?"}
+        )
+
+        # The answer should match what the LLM generated
+        final_answer = result.get("final_answer", "")
+        assert "42.8" in final_answer or "42.8B" in final_answer
+
+        assert mock_llm_factory.called
+        mock_review.return_value.initiate_review.assert_not_called()
         # ------------------------------------------------------------------
         # Claim Generation - Force claims to be created
         # ------------------------------------------------------------------
