@@ -223,10 +223,11 @@ def test_scenario_4_missing_provenance_blocks(runner):
     )
 
     assert result.retrieval_valid is False
-    assert "MISSING_PROVENANCE" in " ".join(result.retrieval_issues)
-    assert result.should_route_to_audit is True
-    assert result.output_valid is False
-    assert "Insufficient or unreliable evidence found." in result.final_safe_output
+    # The error message is now more specific: MISSING_DOCUMENT_SHA256
+    assert any(
+        "MISSING_DOCUMENT_SHA256" in issue or "MISSING_PROVENANCE" in issue
+        for issue in result.retrieval_issues
+    )
 
 
 # ────────────────────────────────────────

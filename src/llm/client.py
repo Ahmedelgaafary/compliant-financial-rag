@@ -40,7 +40,7 @@ class LLMClient:
 
     def __init__(
         self,
-        provider: str = "openai",  # or "anthropic", "gemini", "ollama"
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
@@ -50,11 +50,11 @@ class LLMClient:
 
         Args:
             provider: "openai", "anthropic", "gemini", or "ollama"
+                     If None, reads from LLM_PROVIDER environment variable
             model: Model name (uses default if None)
             temperature: 0.0 for deterministic, 0.7 for creative
             max_tokens: Maximum tokens in response (default from env or 4096)
         """
-        self.provider = provider
         self.temperature = temperature
         
         # Read max_tokens from environment or use default
@@ -62,7 +62,17 @@ class LLMClient:
             max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
         self.max_tokens = max_tokens
 
-        # Set default models
+        # DETERMINE PROVIDER FROM ENVIRONMENT if not specified
+        if provider is None:
+            provider = os.environ.get("LLM_PROVIDER", "").lower()
+            if provider:
+                print(f"LLM Provider from env: {provider}")
+            else:
+                print("LLM_PROVIDER not set, attempting auto-detect...")
+
+        self.provider = provider
+
+        # Set default models and initialize client
         if provider == "openai":
             self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
             self.client = self._init_openai()
@@ -70,13 +80,59 @@ class LLMClient:
             self.model = model or os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
             self.client = self._init_anthropic()
         elif provider == "gemini":
-            self.model = model or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+            self.model = model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
             self.client = self._init_gemini()
         elif provider == "ollama":
             self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.2")
             self.client = None
         else:
-            raise ValueError(f"Unsupported provider: {provider}")
+            # Auto-detect fallback
+            self._auto_detect()
+
+    def _auto_detect(self):
+        """Auto-detect available LLM provider."""
+        # Check Gemini first
+        if os.environ.get("GEMINI_API_KEY"):
+            print("Auto-detected: Using Gemini")
+            self.provider = "gemini"
+            self.model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
+            self.client = self._init_gemini()
+            return
+        
+        # Then OpenAI
+        if os.environ.get("OPENAI_API_KEY"):
+            print("Auto-detected: Using OpenAI")
+            self.provider = "openai"
+            self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+            self.client = self._init_openai()
+            return
+        
+        # Then Anthropic
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            print("Auto-detected: Using Anthropic")
+            self.provider = "anthropic"
+            self.model = os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+            self.client = self._init_anthropic()
+            return
+        
+        # Then Ollama
+        try:
+            import requests
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            if response.status_code == 200:
+                print("Auto-detected: Using Ollama")
+                self.provider = "ollama"
+                self.model = os.environ.get("OLLAMA_MODEL", "llama3.2")
+                self.client = None
+                return
+        except (ImportError, requests.exceptions.RequestException):
+            pass
+        
+        raise RuntimeError(
+            "No LLM provider configured. "
+            "Please set LLM_PROVIDER=gemini and GEMINI_API_KEY, "
+            "or set OPENAI_API_KEY, ANTHROPIC_API_KEY, or run Ollama locally."
+        )
 
     def _init_openai(self):
         """Initialize OpenAI client."""
@@ -112,15 +168,7 @@ class LLMClient:
         return genai.Client(api_key=api_key)
 
     def generate(self, prompt: str) -> str:
-        """
-        Generate a response using the LLM.
-
-        Args:
-            prompt: The prompt to send to the LLM
-
-        Returns:
-            The generated response as a string
-        """
+        """Generate a response using the LLM."""
         if "EVIDENCE" not in prompt and "evidence" not in prompt:
             print("Warning: Prompt does not contain evidence. This may lead to hallucinations.")
 
@@ -155,7 +203,7 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
             temperature=self.temperature,
-            max_tokens=self.max_tokens,  # Now configurable
+            max_tokens=self.max_tokens,
         )
         return response.choices[0].message.content.strip()
 
@@ -163,7 +211,7 @@ class LLMClient:
         """Generate using Anthropic Claude."""
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=self.max_tokens,  # Now configurable
+            max_tokens=self.max_tokens,
             temperature=self.temperature,
             system=(
                 "You are a financial analyst. "
@@ -176,24 +224,21 @@ class LLMClient:
 
     def _generate_gemini(self, prompt: str) -> str:
         """Generate using Google Gemini."""
-        # Use model from environment or default
         model_names = [
             self.model,
             os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp"),
             "gemini-2.0-flash-exp",
             "gemini-1.5-flash",
             "gemini-1.5-pro",
-            "gemini-1.0-pro",
         ]
 
-        # Remove duplicates while preserving insertion order
+        # Remove duplicates
         seen = set()
         model_names = [m for m in model_names if not (m in seen or seen.add(m))]
 
-        # Configure model parameters with higher token limit
         config = types.GenerateContentConfig(
             temperature=self.temperature,
-            max_output_tokens=self.max_tokens,  # Now configurable
+            max_output_tokens=self.max_tokens,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 disable=True
             )
@@ -234,93 +279,28 @@ class LLMClient:
                 "prompt": f"{system_prompt}\n\n{prompt}",
                 "stream": False,
                 "temperature": self.temperature,
-                "max_tokens": self.max_tokens,  # Now configurable
+                "max_tokens": self.max_tokens,
             },
-            timeout=120,  # Increased timeout for longer responses
+            timeout=120,
         )
         response.raise_for_status()
         return response.json()["response"].strip()
 
 
 def get_llm_client() -> LLMClient:
-    """
-    Factory function to get the LLM client based on environment.
-    """
+    """Factory function to get the LLM client based on environment."""
     provider = os.environ.get("LLM_PROVIDER", "").lower()
-
-    # Get max_tokens from environment
     max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
 
-    if provider == "gemini":
-        if os.environ.get("GEMINI_API_KEY"):
-            print("Using Gemini as LLM provider (from LLM_PROVIDER)")
-            return LLMClient(
-                provider="gemini",
-                max_tokens=max_tokens
-            )
-        raise ValueError("LLM_PROVIDER is 'gemini' but GEMINI_API_KEY is not set")
+    # Log which provider is being used
+    if provider:
+        print(f"Using LLM provider from env: {provider}")
+    else:
+        print("No LLM_PROVIDER set, will auto-detect")
 
-    if provider == "openai":
-        if os.environ.get("OPENAI_API_KEY"):
-            print("Using OpenAI as LLM provider (from LLM_PROVIDER)")
-            return LLMClient(
-                provider="openai",
-                max_tokens=max_tokens
-            )
-        raise ValueError("LLM_PROVIDER is 'openai' but OPENAI_API_KEY is not set")
-
-    if provider == "anthropic":
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            print("Using Anthropic as LLM provider (from LLM_PROVIDER)")
-            return LLMClient(
-                provider="anthropic",
-                max_tokens=max_tokens
-            )
-        raise ValueError("LLM_PROVIDER is 'anthropic' but ANTHROPIC_API_KEY is not set")
-
-    if provider == "ollama":
-        print("Using Ollama as LLM provider (from LLM_PROVIDER)")
-        return LLMClient(
-            provider="ollama",
-            max_tokens=max_tokens
-        )
-
-    if os.environ.get("GEMINI_API_KEY"):
-        print("Using Gemini as LLM provider")
-        return LLMClient(
-            provider="gemini",
-            max_tokens=max_tokens
-        )
-    if os.environ.get("OPENAI_API_KEY"):
-        print("Using OpenAI as LLM provider")
-        return LLMClient(
-            provider="openai",
-            max_tokens=max_tokens
-        )
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        print("Using Anthropic as LLM provider")
-        return LLMClient(
-            provider="anthropic",
-            max_tokens=max_tokens
-        )
-
-    try:
-        import requests
-
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        if response.status_code == 200:
-            print("Using Ollama as LLM provider")
-            return LLMClient(
-                provider="ollama",
-                max_tokens=max_tokens
-            )
-    except (requests.ConnectionError, requests.Timeout, ImportError):
-        pass
-
-    raise RuntimeError(
-        "No LLM provider configured. "
-        "Please set LLM_PROVIDER=gemini and GEMINI_API_KEY, "
-        "or set OPENAI_API_KEY, ANTHROPIC_API_KEY, or run Ollama locally."
+    return LLMClient(
+        provider=provider if provider else None,
+        max_tokens=max_tokens
     )
 
 

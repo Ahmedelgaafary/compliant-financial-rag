@@ -85,6 +85,10 @@ Thumbs.db
 .coverage
 htmlcov/
 coverage.xml
+debug_apple_chunks.py
+debug_multi.py
+debug_verify.py
+test_multi_company.py
 
 
 # ==========================================
@@ -102,4 +106,3 @@ logs/
 .ruff_cache/audit_logs/
 audit_logs/
 audit_logs/
-

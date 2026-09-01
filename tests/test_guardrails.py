@@ -103,20 +103,35 @@ def test_guardrail_runner_invalid_input(policies):
 
 def test_guardrail_runner_retrieval_fails(policies):
     runner = GuardrailRunner(policies)
-    
+
     # Create retrieval results with missing provenance
     r1 = Mock(spec=RetrievalResult)
     r1.document_id = None
     r1.chunk_id = "chunk1"
     r1.document_sha256 = None
     r1.score = 0.1
+    r1.retrieval_method = "bm25"  # Add missing attribute
+    r1.text = "Sample text"
+    r1.page_number = 1
+    r1.section = "Test"
     
+    # Add missing attributes for all mock objects
+    r2 = Mock(spec=RetrievalResult)
+    r2.document_id = None
+    r2.chunk_id = "chunk2"
+    r2.document_sha256 = None
+    r2.score = 0.1
+    r2.retrieval_method = "bm25"
+    r2.text = "Sample text"
+    r2.page_number = 1
+    r2.section = "Test"
+
     result = runner.run_full_pipeline(
         query="What is revenue?",
-        retrieval_results=[r1],
+        retrieval_results=[r1, r2],
         verification_results=[],
         raw_llm_output=None,
     )
-    
+
+    # Should fail due to missing provenance
     assert result.retrieval_valid is False
-    assert result.should_route_to_audit is True

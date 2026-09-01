@@ -1,4 +1,3 @@
-
 """Agent workflow nodes for retrieval, verification, guardrails, and audit."""
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from src.llm.client import LLMClient
 from src.retrieval.bm25 import BM25Retriever
 from src.retrieval.hybrid import HybridRetriever
 from src.retrieval.models import RetrievalResult
+from src.retrieval.retrieval_pipeline import RetrievalPipeline
 from src.retrieval.vector_store import VectorStore
 from src.verification.claim_verifier import ClaimVerifier
 from src.verification.models import (
@@ -113,7 +113,7 @@ def query_analysis_node(state: AgentState) -> AgentState:
 
 
 def retrieval_node(state: AgentState) -> AgentState:
-    """Retrieve evidence for each query task."""
+    """Retrieve evidence for each query task using multi-stage pipeline."""
     query = state.user_query.strip()
 
     if not query:
@@ -124,13 +124,17 @@ def retrieval_node(state: AgentState) -> AgentState:
     try:
         chunks = _load_document_chunks()
 
-        retriever = HybridRetriever(
+        hybrid_retriever = HybridRetriever(
             bm25_retriever=BM25Retriever(chunks),
             vector_store=VectorStore(chunks),
         )
 
-        analysis = analyze_query(query)
+        pipeline = RetrievalPipeline(
+            hybrid_retriever=hybrid_retriever,
+            chunks=chunks,
+        )
 
+        analysis = analyze_query(query)
         state.query_analysis = analysis
         state.query_tasks = list(analysis.get("tasks", []))
 
@@ -139,8 +143,7 @@ def retrieval_node(state: AgentState) -> AgentState:
                 {
                     "question_id": "q1",
                     "question": query,
-                    "companies": [],
-                    "metrics": [],
+                    "companies": detect_companies(query),
                     "period": _first_year(query),
                 }
             ]
@@ -152,31 +155,39 @@ def retrieval_node(state: AgentState) -> AgentState:
             question_id = task.get("question_id", "q1")
             question = task.get("question", query)
             companies = task.get("companies", [])
+            period = task.get("period")
+            metrics = task.get("metrics", [])
 
-            for company in companies or [None]:
-                retrieval_query = (
-                    f"{company}: {question}"
-                    if company
-                    else question
-                )
-
-                results = list(
-                    retriever.retrieve(
-                        retrieval_query,
-                        top_k=10,
+            if companies:
+                for company in companies:
+                    results = pipeline.retrieve(
+                        query=question,
+                        company=company,
+                        metric=metrics[0] if metrics else None,
+                        period=period,
+                        # A larger top_k gives claim_generation_node's
+                        # year-column alignment check more candidates
+                        # to search through. The reranker's scoring
+                        # can tie multiple chunks together (see
+                        # FinancialReranker), so the correct evidence
+                        # is not guaranteed to rank first - only that
+                        # it's likely present somewhere in a wider
+                        # candidate set. Extraction already rejects
+                        # wrong-year matches and keeps searching, so
+                        # this only helps it find the right one rather
+                        # than risking it being excluded entirely.
+                        top_k=25,
                     )
+
+                    company_key = f"{question_id}_{company}"
+                    grouped.setdefault(company_key, []).extend(results)
+                    all_results.extend(results)
+            else:
+                results = pipeline.retrieve(
+                    query=question,
+                    period=period,
+                    top_k=25,
                 )
-
-                if company:
-                    scoped = [
-                        result
-                        for result in results
-                        if _result_matches_company(result, company)
-                    ]
-
-                    if scoped:
-                        results = scoped
-
                 grouped.setdefault(question_id, []).extend(results)
                 all_results.extend(results)
 
@@ -184,7 +195,6 @@ def retrieval_node(state: AgentState) -> AgentState:
             key: _deduplicate_results(value)
             for key, value in grouped.items()
         }
-
         state.retrieval_results = _deduplicate_results(all_results)
 
     except RuntimeError as exc:
@@ -199,20 +209,59 @@ def _result_matches_company(
     result: RetrievalResult,
     company: str,
 ) -> bool:
-    """Check whether retrieved evidence belongs to a company."""
-    tokens = {
-        token
-        for token in re.findall(r"[a-z0-9]+", company.lower())
-        if len(token) > 2
-    }
+    """
+    Check whether retrieved evidence belongs to a company.
+    Uses document_id, text content, and company aliases.
+    """
+    from src.config.companies import CompanyConfig
 
-    haystack = (
-        f"{result.document_id} {result.text[:2000]}"
-    ).lower()
+    if not company:
+        return True  # No company specified, accept all
 
-    return bool(tokens) and all(
-        token in haystack for token in tokens
-    )
+    company_lower = company.lower().strip()
+
+    # 1. Check if document_id directly matches
+    if result.document_id:
+        doc_lower = result.document_id.lower()
+
+        if company_lower in doc_lower:
+            return True
+
+        if "apple" in doc_lower and ("apple" in company_lower or "aapl" in company_lower):
+            return True
+
+        if "msft" in doc_lower and ("microsoft" in company_lower or "msft" in company_lower):
+            return True
+
+        detected_key = CompanyConfig.detect_company(result.document_id)
+        if detected_key:
+            if detected_key.lower() in company_lower or company_lower in detected_key.lower():
+                return True
+
+        for key, config in CompanyConfig.COMPANIES.items():
+            for doc_id_pattern in config.get("document_ids", []):
+                if doc_id_pattern.lower() in doc_lower:
+                    if key.lower() in company_lower or company_lower in key.lower():
+                        return True
+
+    # 2. Check text content
+    if result.text:
+        text_lower = result.text.lower()
+
+        if company_lower in text_lower:
+            return True
+
+        config = CompanyConfig.get_company(company)
+        if config:
+            for variation in config.get("variations", []):
+                if variation.lower() in text_lower:
+                    return True
+
+            for keyword in config.get("keywords", []):
+                if keyword.lower() in text_lower:
+                    return True
+
+    return False
 
 
 def _deduplicate_results(
@@ -244,19 +293,19 @@ _METRIC_PATTERNS = {
     "revenue": r"(?:total\s+)?(?:revenue|revenues|net\s+sales|sales)",
     "profit": r"(?:gross\s+profit|operating\s+profit|profit)",
     "income": r"(?:net\s+income|net\s+earnings|income)",
+    "net_income": r"(?:net\s+income|net\s+earnings)",
     "loss": r"(?:net\s+loss|operating\s+loss|loss)",
     "assets": r"(?:total\s+assets|current\s+assets|assets)",
-    "liabilities": (
-        r"(?:total\s+liabilities|current\s+liabilities|liabilities)"
-    ),
+    "liabilities": r"(?:total\s+liabilities|current\s+liabilities|liabilities)",
     "cash flow": r"(?:operating\s+cash\s+flow|cash\s+flow)",
     "r&d": r"(?:research\s+and\s+development|r&d)",
     "ebitda": r"ebitda",
-    "margin": (
-        r"(?:gross\s+margin|operating\s+margin|net\s+margin|margin)"
-    ),
+    "margin": r"(?:gross\s+margin|operating\s+margin|net\s+margin|margin)",
     "growth": r"(?:growth|increase|decrease|change)",
 }
+
+
+_PERCENTAGE_METRICS = {"margin", "growth"}
 
 
 _VALUE_PATTERN = (
@@ -269,14 +318,158 @@ _VALUE_PATTERN = (
 )
 
 
-def claim_generation_node(state: AgentState) -> AgentState:
-    """
-    Extract deterministic financial claims from retrieved evidence.
+_YEAR_TOKEN = r"(?:19|20)\d{2}"
 
-    Numeric financial claims are extracted directly from retrieved
-    evidence. The LLM is intentionally not used for numeric claim
-    extraction.
+_YEAR_HEADER_PATTERN = re.compile(
+    rf"(?:{_YEAR_TOKEN}(?:[\s,]+(?:and\s+)?)){{1,3}}{_YEAR_TOKEN}"
+)
+
+_CURRENCY_VALUE_PATTERN = re.compile(
+    r"\$\s*[-+]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+    r"(?:\s*(?:bn|mn|b|m|k|billion|million|thousand|trillion))?",
+    re.IGNORECASE,
+)
+
+
+def _nearest_year_header(
+    text: str,
+    end_pos: int,
+    window: int = 500,
+) -> list[str]:
+    """Find the closest run of 2-4 years appearing before end_pos."""
+    start = max(0, end_pos - window)
+    segment = text[start:end_pos]
+
+    header_matches = list(_YEAR_HEADER_PATTERN.finditer(segment))
+
+    if not header_matches:
+        return []
+
+    closest = header_matches[-1]
+
+    return re.findall(_YEAR_TOKEN, closest.group(0))
+
+
+def _values_after(
+    text: str,
+    start_pos: int,
+    count: int,
+    window: int = 150,
+) -> list[str]:
+    """Collect up to count consecutive currency values starting near start_pos."""
+    end = min(len(text), start_pos + window)
+    segment = text[start_pos:end]
+
+    return [
+        m.group(0)
+        for m in _CURRENCY_VALUE_PATTERN.finditer(segment)
+    ][:count]
+
+
+_STANDALONE_YEAR_PATTERN = re.compile(rf"\b{_YEAR_TOKEN}\b")
+
+
+def _nearest_standalone_year(
+    text: str,
+    end_pos: int,
+    window: int = 300,
+) -> str | None:
     """
+    Find the closest single standalone year appearing shortly before
+    end_pos, for use when no multi-year table header run was found.
+    See _resolve_value_by_year_column for why this matters.
+    """
+    start = max(0, end_pos - window)
+    segment = text[start:end_pos]
+
+    matches = list(_STANDALONE_YEAR_PATTERN.finditer(segment))
+
+    if not matches:
+        return None
+
+    return matches[-1].group(0)
+
+
+def _resolve_value_by_year_column(
+    text: str,
+    match: re.Match,
+    period: str | None,
+) -> tuple[str | None, bool]:
+    """
+    Align a matched metric value to the requested fiscal year.
+
+    Returns (value, is_mismatch):
+    - (None, False): no discernible year context nearby - the caller
+      should fall back to its normal single-value match.
+    - (None, True): a year context WAS found (either a multi-year
+      table header, or a standalone single-year section marker), but
+      it does not match the requested period - the located figures
+      clearly belong to a different fiscal year, so the caller should
+      reject this match outright rather than guessing.
+    - (value, False): a multi-year header includes the requested
+      period, and `value` is the correctly column-aligned figure.
+    """
+    years = _nearest_year_header(text, match.start())
+
+    if len(years) >= 2:
+        if not period or period not in years:
+            return None, True
+
+        values = _values_after(text, match.start(), len(years))
+
+        if len(values) < len(years):
+            return None, True
+
+        return values[years.index(period)], False
+
+    # No multi-year table header nearby. Some filings present each
+    # fiscal year as its own separate mini-table instead (e.g. a
+    # segment note reading "2024 Americas Europe ... Net sales $X"
+    # followed later by an entirely separate "2023 Americas Europe
+    # ... Net sales $Y" block) - _nearest_year_header only recognizes
+    # runs of 2+ years, so it can't see this. Without this fallback
+    # check, a page footer citing the filing's cover year (e.g.
+    # "Apple Inc. | 2025 Form 10-K | 47") can be the ONLY occurrence
+    # of the requested period anywhere in the chunk, causing whichever
+    # unrelated year's standalone mini-table happens to be physically
+    # closest to that footer to be scoped in and mistaken for the
+    # requested year's data.
+    standalone_year = _nearest_standalone_year(text, match.start())
+
+    if standalone_year and period and standalone_year != period:
+        return None, True
+
+    return None, False
+
+
+_CONTEXT_UNIT_PATTERN = re.compile(
+    r"\(\s*in\s+(thousands?|millions?|billions?|trillions?)"
+    r"(?:\s+of\s+\w+)?\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _nearest_context_unit(
+    text: str,
+    end_pos: int,
+    window: int = 500,
+) -> str | None:
+    """Find the closest '(in millions)'-style annotation before end_pos."""
+    start = max(0, end_pos - window)
+    segment = text[start:end_pos]
+
+    matches = list(_CONTEXT_UNIT_PATTERN.finditer(segment))
+
+    if not matches:
+        return None
+
+    unit = matches[-1].group(1).casefold()
+
+    return unit[:-1] if unit.endswith("s") else unit
+
+
+def claim_generation_node(state: AgentState) -> AgentState:
+    """Extract deterministic financial claims from retrieved evidence."""
     claims: list[Claim] = []
 
     if not state.query_tasks:
@@ -287,14 +480,10 @@ def claim_generation_node(state: AgentState) -> AgentState:
                 question_id="q1",
             )
         )
-
     else:
         for task in state.query_tasks:
             question_id = task.get("question_id", "q1")
-            question = task.get(
-                "question",
-                state.user_query,
-            )
+            question = task.get("question", state.user_query)
 
             companies = task.get("companies", [])
             metrics = task.get("metrics", []) or _infer_metrics(question)
@@ -307,14 +496,12 @@ def claim_generation_node(state: AgentState) -> AgentState:
 
             for company in companies or [None]:
                 scoped_results = results
-
                 if company:
                     company_results = [
                         result
                         for result in results
                         if _result_matches_company(result, company)
                     ]
-
                     if company_results:
                         scoped_results = company_results
 
@@ -333,11 +520,9 @@ def claim_generation_node(state: AgentState) -> AgentState:
 
     if state.claims:
         state.raw_llm_output = ""
-
     else:
         state.raw_llm_output = (
-            "The evidence does not contain "
-            "the requested financial information."
+            "The evidence does not contain the requested financial information."
         )
 
     return state
@@ -349,11 +534,7 @@ def _extract_numeric_claims(
     question_id: str = "q1",
     company: str | None = None,
 ) -> list[Claim]:
-    """
-    Backward-compatible numeric claim extractor.
-
-    Simple financial questions default to revenue extraction.
-    """
+    """Backward-compatible numeric claim extractor defaulting to revenue."""
     return _extract_metric_claims(
         metric="revenue",
         results=results,
@@ -373,190 +554,6 @@ def _infer_metrics(question: str) -> list[str]:
         if re.search(pattern, text)
     ]
 
-
-def _extract_metric_claims(
-    metric: str,
-    results: list[RetrievalResult],
-    period: str | None,
-    company: str | None,
-    question_id: str,
-) -> list[Claim]:
-    """
-    Extract one deterministic claim for a financial metric.
-    """
-    metric_key = metric.lower().strip()
-    pattern = _METRIC_PATTERNS.get(metric_key)
-
-    if not pattern:
-        return []
-
-    # Currency-denominated metrics require a $ sign or explicit unit
-    currency_metrics = {
-        "revenue", "profit", "income", "loss", "assets", 
-        "liabilities", "cash flow", "r&d", "ebitda"
-    }
-    requires_currency = metric_key in currency_metrics
-
-    patterns = (
-        re.compile(
-            rf"{pattern}"
-            rf"\s*(?:was|were|is|are|of|to|=|:)?\s*"
-            rf"{_VALUE_PATTERN}",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            rf"{_VALUE_PATTERN}"
-            rf"\s+(?:in|for)\s+"
-            rf"{pattern}",
-            re.IGNORECASE,
-        ),
-    )
-
-    all_matches = []
-
-    for result in results:
-        candidates = (
-            _period_scoped_texts(
-                result.text,
-                period,
-            )
-            or [result.text]
-        )
-
-        for text in candidates:
-            for regex in patterns:
-                match = regex.search(text)
-
-                if not match:
-                    continue
-
-                raw_value = match.group("value")
-                context = text[max(0, match.start() - 50):min(len(text), match.end() + 50)]
-
-                # ============================================================
-                # SKIP PERCENTAGES
-                # ============================================================
-                if '%' in context or 'percent' in context.lower() or 'percentage' in context.lower():
-                    continue
-
-                if 'percentage of' in context.lower():
-                    continue
-
-                # Skip if the match is "14 %" or similar
-                if re.search(rf"{_VALUE_PATTERN}\s*%", text[max(0, match.start() - 5):min(len(text), match.end() + 5)]):
-                    continue
-
-                numeric_part = re.sub(r'[^0-9.]', '', raw_value)
-                if not numeric_part:
-                    continue
-
-                try:
-                    num_val = float(numeric_part)
-                except ValueError:
-                    continue
-
-                # Skip small numbers that are likely percentages
-                if num_val < 100 and ('%' in context or 'percent' in context.lower()):
-                    continue
-
-                # ============================================================
-                # REQUIRE $ SIGN OR UNIT FOR CURRENCY METRICS (CRITICAL FIX)
-                # ============================================================
-                has_dollar = '$' in raw_value or '$' in context
-                unit = _extract_unit(raw_value)
-                has_unit = unit is not None
-
-                # For currency metrics, require a $ sign or a unit
-                if requires_currency and not has_dollar and not has_unit:
-                    # Check if the context has a $ sign nearby
-                    if '$' not in context:
-                        # Skip this match - it's likely a percentage or ratio
-                        continue
-
-                # For non-currency metrics (margin, growth), allow bare numbers
-                # But still check if it's a percentage context
-                if not requires_currency and '%' in context:
-                    continue
-
-                # ============================================================
-                # Check if this is a "Total" match (prefer these)
-                # ============================================================
-                is_total = 'total net sales' in text.lower() or 'Total net sales' in text
-
-                all_matches.append({
-                    'result': result,
-                    'text': text,
-                    'match': match,
-                    'raw_value': raw_value,
-                    'numeric_value': num_val,
-                    'unit': unit,
-                    'has_unit': has_unit,
-                    'has_dollar': has_dollar,
-                    'is_total': is_total,
-                    'context': context,
-                })
-
-    # ============================================================
-    # PICK THE BEST MATCH
-    # ============================================================
-    if not all_matches:
-        return []
-
-    # Sort by priority:
-    # 1. "Total net sales" matches first
-    # 2. Has $ sign
-    # 3. Has unit (billion, million, etc.)
-    # 4. Larger numbers first
-    all_matches.sort(
-        key=lambda x: (
-            # Priority 1: Total net sales
-            not x['is_total'],
-            # Priority 2: Has $ sign
-            not x['has_dollar'],
-            # Priority 3: Has unit
-            not x['has_unit'],
-            # Priority 4: Larger number (descending)
-            -x['numeric_value'],
-        )
-    )
-
-    # Take the best match
-    best = all_matches[0]
-
-    raw_value = best['raw_value']
-    unit = best['unit']
-
-    # If no unit was extracted, infer from context
-    if unit is None:
-        if "in millions" in best['text'].lower():
-            unit = "million"
-        elif best['numeric_value'] > 1000:
-            if "Apple" in best['text'] or "Total net sales" in best['text']:
-                unit = "million"
-            else:
-                unit = "thousand"
-
-    normalized_value = _normalize_claim_value(raw_value)
-
-    if not normalized_value:
-        return []
-
-    claim = Claim(
-        claim_id=(
-            f"{question_id}_claim_"
-            f"{metric_key}_{best['result'].chunk_id}"
-        ),
-        claim_type=ClaimType.NUMERIC,
-        subject=metric_key,
-        value=normalized_value,
-        unit=unit,
-        period=period,
-        source_chunk_id=best['result'].chunk_id,
-        company_name=company,
-        question_id=question_id,
-    )
-
-    return [claim]
 
 def _period_scoped_texts(
     text: str,
@@ -579,31 +576,13 @@ def _period_scoped_texts(
 
 
 def _normalize_claim_value(value: str) -> str:
-    """
-    Normalize a financial value into a canonical representation.
-
-    Examples:
-        "$42.8 billion" -> "$42.8B"
-        "$42.8 billion" -> "$42.8B"
-        "$42.8 b"       -> "$42.8B"
-        "$1.2 million"  -> "$1.2M"
-        "$500 mn"       -> "$500M"
-    """
+    """Normalize a financial value into a canonical representation."""
     normalized = " ".join(value.strip().split())
 
     normalized = normalized.replace("$ ", "$")
 
-    # Remove unnecessary spaces immediately inside parentheses.
-    normalized = re.sub(
-        r"\(\s*",
-        "(",
-        normalized,
-    )
-    normalized = re.sub(
-        r"\s*\)",
-        ")",
-        normalized,
-    )
+    normalized = re.sub(r"\(\s*", "(", normalized)
+    normalized = re.sub(r"\s*\)", ")", normalized)
 
     unit_map = {
         "trillion": "T",
@@ -625,21 +604,14 @@ def _normalize_claim_value(value: str) -> str:
 
     if match:
         unit = unit_map[match.group(1).lower()]
-        normalized = (
-            normalized[: match.start()].rstrip()
-            + unit
-        )
+        normalized = normalized[: match.start()].rstrip() + unit
 
     return normalized
 
 
 def _extract_unit(value: str) -> str | None:
     """Extract the canonical financial unit."""
-    match = re.search(
-        r"(T|B|M|K)$",
-        value.strip(),
-        re.IGNORECASE,
-    )
+    match = re.search(r"(T|B|M|K)$", value.strip(), re.IGNORECASE)
 
     if not match:
         return None
@@ -647,19 +619,157 @@ def _extract_unit(value: str) -> str | None:
     return match.group(1).upper()
 
 
+_PREFER_TOTAL_METRICS = {"revenue"}
+
+_STRICT_TOTAL_OVERRIDES = {
+    "revenue": r"total\s+(?:revenue|revenues|net\s+sales|sales)",
+}
+
+
+def _extract_metric_claims(
+    metric: str,
+    results: list[RetrievalResult],
+    period: str | None,
+    company: str | None,
+    question_id: str,
+) -> list[Claim]:
+    """
+    Extract one deterministic claim for a metric.
+
+    For metrics prone to segment/regional breakdown ambiguity (right
+    now: revenue), a filing's consolidated total ("Total net sales
+    $416,161") and a same-keyword segment row ("Americas net sales
+    $162,560") are both genuinely correct dollar figures for the
+    requested year - nothing about year-alignment or currency
+    formatting distinguishes them. Search first for an explicit
+    "Total ..." match across all evidence; only fall back to the
+    looser optional-total pattern if no consolidated figure is found
+    anywhere, since some filings may only report the total under
+    different wording.
+    """
+    metric_key = metric.lower()
+    pattern = _METRIC_PATTERNS.get(metric_key)
+
+    if not pattern:
+        return []
+
+    if metric_key in _PREFER_TOTAL_METRICS:
+        strict_claims = _search_metric_pattern(
+            _STRICT_TOTAL_OVERRIDES[metric_key],
+            metric_key,
+            results,
+            period,
+            company,
+            question_id,
+        )
+
+        if strict_claims:
+            return strict_claims
+
+    return _search_metric_pattern(
+        pattern,
+        metric_key,
+        results,
+        period,
+        company,
+        question_id,
+    )
+
+
+def _search_metric_pattern(
+    pattern: str,
+    metric_key: str,
+    results: list[RetrievalResult],
+    period: str | None,
+    company: str | None,
+    question_id: str,
+) -> list[Claim]:
+    """Search evidence for one metric-keyword pattern and return the first valid claim."""
+    patterns = (
+        re.compile(
+            rf"{pattern}"
+            rf"\s*(?:was|were|is|are|of|to|=|:)?\s*"
+            rf"{_VALUE_PATTERN}",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"{_VALUE_PATTERN}"
+            rf"\s+(?:in|for)\s+"
+            rf"{pattern}",
+            re.IGNORECASE,
+        ),
+    )
+
+    for result in results:
+        candidates = (
+            _period_scoped_texts(result.text, period)
+            or [result.text]
+        )
+
+        for text in candidates:
+            for regex in patterns:
+                match = regex.search(text)
+
+                if not match:
+                    continue
+
+                column_value, mismatch = _resolve_value_by_year_column(
+                    text, match, period
+                )
+
+                if mismatch:
+                    continue
+
+                raw_value = column_value or match.group("value")
+
+                value = _normalize_claim_value(raw_value)
+
+                if not value:
+                    continue
+
+                if metric_key not in _PERCENTAGE_METRICS:
+                    matched_text = column_value or match.group(0)
+
+                    if (
+                        "$" not in matched_text
+                        and _extract_unit(value) is None
+                    ):
+                        continue
+
+                extracted_unit = _extract_unit(value)
+
+                claim_unit = extracted_unit or (
+                    _nearest_context_unit(text, match.start())
+                )
+
+                return [
+                    Claim(
+                        claim_id=(
+                            f"{question_id}_claim_"
+                            f"{metric_key}_{result.chunk_id}"
+                        ),
+                        claim_type=ClaimType.NUMERIC,
+                        subject=metric_key,
+                        value=value,
+                        unit=claim_unit,
+                        period=period,
+                        source_chunk_id=result.chunk_id,
+                        company_name=company,
+                        question_id=question_id,
+                    )
+                ]
+
+    return []
+
+
 def _first_year(text: str) -> str | None:
     """Return the first four-digit year found in text."""
-    match = re.search(
-        r"\b(?:19|20)\d{2}\b",
-        text,
-    )
+    match = re.search(r"\b(?:19|20)\d{2}\b", text)
 
     return match.group(0) if match else None
 
 
-def _deduplicate_claims(
-    claims: list[Claim],
-) -> list[Claim]:
+def _deduplicate_claims(claims: list[Claim]) -> list[Claim]:
     """Remove duplicate claims while preserving order."""
     seen: set[tuple] = set()
     output: list[Claim] = []
@@ -702,20 +812,14 @@ def verification_node(state: AgentState) -> AgentState:
     for claim in state.claims:
         result = verifier.verify(
             claim,
-            evidence.get(
-                claim.source_chunk_id or "",
-                "",
-            ),
+            evidence.get(claim.source_chunk_id or "", ""),
         )
 
         results.append(result)
 
         question_id = claim.question_id or "q1"
 
-        grouped.setdefault(
-            question_id,
-            [],
-        ).append(result)
+        grouped.setdefault(question_id, []).append(result)
 
     state.verification_results = results
     state.verification_by_task = grouped
@@ -762,80 +866,53 @@ def routing_node(state: AgentState) -> AgentState:
 
 
 def answer_generation_node(state: AgentState) -> AgentState:
-    """
-    Generate a natural-language answer using verified claims only.
-
-    A claim is eligible for generation only when its corresponding
-    verification result has VERIFIED status.
-    """
+    """Generate a natural-language answer using verified claims only."""
     verified_results = [
         result
         for result in state.verification_results
         if result.status == VerificationStatus.VERIFIED
     ]
 
-    # Claims exist, but none were verified.
     if state.claims and not verified_results:
         state.final_answer = (
             "The available evidence could not be "
             "deterministically verified, so the "
             "response requires human review."
         )
-
-        state.final_response_status = (
-            FinalResponseStatus.ROUTED_TO_AUDIT
-        )
-
+        state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
         return state
 
-    # No claims means there is nothing safe to generate.
     if not state.claims:
         state.final_answer = (
             "The evidence does not contain the requested "
             "financial information."
         )
-
         state.final_response_status = FinalResponseStatus.GENERATED
-
         return state
 
-    verified_ids = {
-        result.claim_id
-        for result in verified_results
-    }
+    verified_ids = {result.claim_id for result in verified_results}
 
     verified_claims = [
-        claim
-        for claim in state.claims
-        if claim.claim_id in verified_ids
+        claim for claim in state.claims if claim.claim_id in verified_ids
     ]
 
-    # Defensive check: a verification result should always correspond
-    # to an actual claim.
     if not verified_claims:
         state.final_answer = (
             "The available evidence could not be "
             "deterministically verified, so the "
             "response requires human review."
         )
-
-        state.final_response_status = (
-            FinalResponseStatus.ROUTED_TO_AUDIT
-        )
-
+        state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
         return state
 
     evidence = {
-        result.chunk_id: result
-        for result in state.retrieval_results
+        result.chunk_id: result for result in state.retrieval_results
     }
 
     blocks: list[str] = []
 
     for claim in verified_claims:
-        result = evidence.get(
-            claim.source_chunk_id or ""
-        )
+        result = evidence.get(claim.source_chunk_id or "")
 
         if not result:
             continue
@@ -849,19 +926,13 @@ def answer_generation_node(state: AgentState) -> AgentState:
             f"Evidence: {result.text}"
         )
 
-    # A verified claim without source evidence should never be sent
-    # to the answer generator.
     if not blocks:
         state.final_answer = (
             "The verified claim could not be linked to "
             "its source evidence, so the response requires "
             "human review."
         )
-
-        state.final_response_status = (
-            FinalResponseStatus.ROUTED_TO_AUDIT
-        )
-
+        state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
         return state
 
     evidence_text = "\n\n".join(blocks)
@@ -891,8 +962,6 @@ Rules:
 - State clearly when a requested item is unavailable.
 """.strip()
 
-    # Resolve the client at generation time. This keeps the dependency
-    # injectable and allows tests to replace get_llm_client().
     llm = get_llm_client()
 
     generated = llm.generate(prompt)
@@ -916,17 +985,11 @@ def output_guard_node(state: AgentState) -> AgentState:
 
     if state.guardrail_result:
         confidence_obj = getattr(
-            state.guardrail_result,
-            "confidence_score",
-            None,
+            state.guardrail_result, "confidence_score", None
         )
 
         if confidence_obj is not None:
-            confidence = getattr(
-                confidence_obj,
-                "overall",
-                1.0,
-            )
+            confidence = getattr(confidence_obj, "overall", 1.0)
 
     result = validator.validate(
         generated_answer=state.final_answer,
@@ -941,11 +1004,7 @@ def output_guard_node(state: AgentState) -> AgentState:
             "This response could not be validated for safety. "
             "Please consult the original source or contact support."
         )
-
-        state.error = "; ".join(
-            getattr(result, "reasons", [])
-        )
-
+        state.error = "; ".join(getattr(result, "reasons", []))
         state.final_response_status = FinalResponseStatus.BLOCKED
 
     return state
@@ -967,9 +1026,7 @@ def audit_node(state: AgentState) -> AgentState:
     )
 
     retrieval = (
-        state.retrieval_results[0]
-        if state.retrieval_results
-        else None
+        state.retrieval_results[0] if state.retrieval_results else None
     )
 
     outcome = service.initiate_review(
@@ -979,14 +1036,10 @@ def audit_node(state: AgentState) -> AgentState:
             or "Financial request requires human review"
         ),
         verification_status=(
-            verification.status.value
-            if verification
-            else "inconclusive"
+            verification.status.value if verification else "inconclusive"
         ),
         verification_reason=(
-            verification.reason
-            if verification
-            else "EVIDENCE_MISSING"
+            verification.reason if verification else "EVIDENCE_MISSING"
         ),
         risk_assessment=state.risk_assessment,
         verification_results=state.verification_results,
@@ -999,21 +1052,9 @@ def audit_node(state: AgentState) -> AgentState:
             }
             for result in state.retrieval_results
         ],
-        document_id=(
-            retrieval.document_id
-            if retrieval
-            else ""
-        ),
-        document_sha256=(
-            retrieval.document_sha256
-            if retrieval
-            else ""
-        ),
-        page_number=(
-            retrieval.page_number
-            if retrieval
-            else 1
-        ),
+        document_id=retrieval.document_id if retrieval else "",
+        document_sha256=retrieval.document_sha256 if retrieval else "",
+        page_number=retrieval.page_number if retrieval else 1,
     )
 
     state.audit_record = outcome.audit_record
@@ -1024,9 +1065,7 @@ def audit_node(state: AgentState) -> AgentState:
         "You will be notified when a decision is made."
     )
 
-    state.final_response_status = (
-        FinalResponseStatus.ROUTED_TO_AUDIT
-    )
+    state.final_response_status = FinalResponseStatus.ROUTED_TO_AUDIT
 
     return state
 
@@ -1036,9 +1075,6 @@ def audit_node(state: AgentState) -> AgentState:
 # ----------------------------------------------------------------------
 
 
-def financial_intelligence_node(
-    state: AgentState,
-) -> AgentState:
+def financial_intelligence_node(state: AgentState) -> AgentState:
     """Compatibility node for the financial-intelligence stage."""
     return state
-
